@@ -99,3 +99,34 @@ EOF
 echo "App Bundle created at $APP_DIR"
 echo "You can run it via: open $APP_DIR"
 echo "Or executable directly: $MACOS_DIR/$APP_NAME"
+
+echo "Bundling dependencies with dylibbundler..."
+if ! command -v dylibbundler &> /dev/null; then
+    echo "Installing dylibbundler..."
+    brew install dylibbundler
+fi
+
+LIBS_DIR="$CONTENTS_DIR/libs"
+mkdir -p "$LIBS_DIR"
+
+# Bundle main executable dependencies
+dylibbundler -od -b \
+  -x "$MACOS_DIR/$APP_NAME" \
+  -d "$LIBS_DIR/" \
+  -p @executable_path/../libs/ \
+  -i /usr/lib \
+  -i /System/Library
+
+# Bundle plugin dependencies
+dylibbundler -od -b \
+  -x "$PLUGINS_DIR/retrojsvice.so" \
+  -d "$LIBS_DIR/" \
+  -p @executable_path/../../../libs/ \
+  -i /usr/lib \
+  -i /System/Library
+
+echo "Re-signing app bundle..."
+codesign --force --deep --sign - "$APP_DIR"
+
+echo "Self-contained app bundle created at $APP_DIR"
+echo "All Homebrew dependencies bundled - no external libraries required"

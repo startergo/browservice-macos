@@ -1,0 +1,81 @@
+name: Build macOS App Bundle
+
+on:
+  push:
+    branches: [ master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - runner: macos-26
+            arch: arm64
+            artifact: browservice-macos-arm64
+          - runner: macos-26-intel
+            arch: x86_64
+            artifact: browservice-macos-intel
+
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: brew install pango poco dylibbundler jpeg-turbo
+
+      - name: Setup CEF
+        run: ./setup_cef_mac.sh
+
+      - name: Build
+        run: |
+          JPEG_PREFIX=$(brew --prefix jpeg-turbo)
+          mkdir -p build
+          cd build
+          cmake -DCMAKE_BUILD_TYPE=Release \
+            -DJPEG_LIBRARY=${JPEG_PREFIX}/lib/libjpeg.dylib \
+            -DJPEG_INCLUDE_DIR=${JPEG_PREFIX}/include \
+            ..
+          make -j$(sysctl -n hw.logicalcpu)
+
+      - name: Create app bundle
+        run: |
+          cd build
+          ../create_bundle.sh
+
+      - name: Create DMG
+        run: |
+          cd build
+          hdiutil create -volname "Browservice" \
+            -srcfolder browservice.app \
+            -ov -format UDZO \
+            ${{ matrix.artifact }}.dmg
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: build/${{ matrix.artifact }}.dmg
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        if: github.ref == 'refs/heads/master'
+        with:
+          tag_name: latest
+          name: Latest Build
+          files: build/${{ matrix.artifact }}.dmg
+          body: |
+            Self-contained Browservice for macOS. No dependencies required.
+
+            Downloads:
+            - browservice-macos-arm64.dmg for Apple Silicon (M1/M2/M3/M4)
+            - browservice-macos-intel.dmg for Intel Mac
+
+            Performance on Apple Silicon: ~27% CPU at 60fps WebGL, 10-15% GPU, native CoreAudio.
+
+            Install: curl -sL https://raw.githubusercontent.com/startergo/browservice-macos/master/install.sh | bash
+
+            Connect from Win98/Snow Leopard QEMU: http://10.0.2.2:8080
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -47,3 +47,6 @@ libcef_dll_wrapper/
 *.dmg
 
 cef/
+build/
+cef/
+*.dmg
