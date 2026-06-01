@@ -117,13 +117,32 @@ dylibbundler -od -b \
   -i /usr/lib \
   -i /System/Library
 
-# Bundle plugin dependencies
-dylibbundler -od -b \
+# Bundle plugin dependencies (use -of not -od to NOT erase the libs dir from first call)
+dylibbundler -of -b \
   -x "$PLUGINS_DIR/retrojsvice.so" \
   -d "$LIBS_DIR/" \
   -p @executable_path/../../../libs/ \
   -i /usr/lib \
   -i /System/Library
+
+echo "Fixing plugin library references to use @loader_path..."
+for dep in $(otool -L "$PLUGINS_DIR/retrojsvice.so" | grep "@executable_path/../../../libs/" | awk '{print $1}'); do
+  libname=$(basename "$dep")
+  install_name_tool -change "$dep" "@loader_path/../libs/$libname" "$PLUGINS_DIR/retrojsvice.so" 2>/dev/null || true
+done
+
+echo "Fixing inter-library references in bundled libs..."
+for lib in "$LIBS_DIR"/*.dylib; do
+  for dep in $(otool -L "$lib" | grep -E "@executable_path/../(\.\./\.\./)?libs/" | awk '{print $1}'); do
+    libname=$(basename "$dep")
+    install_name_tool -change "$dep" "@loader_path/$libname" "$lib" 2>/dev/null || true
+  done
+done
+
+echo "Removing duplicate rpaths..."
+while install_name_tool -delete_rpath '@executable_path/../libs/' "$MACOS_DIR/$APP_NAME" 2>/dev/null; do true; done
+install_name_tool -add_rpath '@executable_path/../libs/' "$MACOS_DIR/$APP_NAME" 2>/dev/null || true
+while install_name_tool -delete_rpath '@executable_path/../../../libs/' "$PLUGINS_DIR/retrojsvice.so" 2>/dev/null; do true; done
 
 echo "Re-signing app bundle..."
 codesign --force --deep --sign - "$APP_DIR"
