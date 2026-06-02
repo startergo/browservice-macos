@@ -88,9 +88,7 @@ public:
     // HTTPServerEventHandler -
     virtual void onHTTPServerRequest(shared_ptr<HTTPRequest> request) override;
     virtual void onHTTPServerWebSocketConnection(
-        shared_ptr<WebSocketConnection> connection,
-        uint64_t windowHandle,
-        string csrfToken
+        shared_ptr<WebSocketConnection> connection
     ) override;
     virtual void onHTTPServerShutdownComplete() override;
 

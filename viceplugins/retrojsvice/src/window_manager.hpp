@@ -84,9 +84,7 @@ public:
     // Route a WebSocket connection to the appropriate window
     void handleWebSocketConnection(
         MCE,
-        shared_ptr<WebSocketConnection> connection,
-        uint64_t windowHandle,
-        string csrfToken
+        shared_ptr<WebSocketConnection> connection
     );
 
     bool createPopupWindow(

@@ -92,9 +92,7 @@ void WindowManager::handleHTTPRequest(MCE, shared_ptr<HTTPRequest> request) {
 
 void WindowManager::handleWebSocketConnection(
     MCE,
-    shared_ptr<WebSocketConnection> connection,
-    uint64_t windowHandle,
-    string csrfToken
+    shared_ptr<WebSocketConnection> connection
 ) {
     REQUIRE_API_THREAD();
 
@@ -103,6 +101,7 @@ void WindowManager::handleWebSocketConnection(
         return;
     }
 
+    uint64_t windowHandle = connection->windowHandle();
     auto it = windows_.find(windowHandle);
     if(it == windows_.end()) {
         connection->close();

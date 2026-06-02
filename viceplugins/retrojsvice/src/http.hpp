@@ -111,9 +111,7 @@ class HTTPServerEventHandler {
 public:
     virtual void onHTTPServerRequest(shared_ptr<HTTPRequest> request) = 0;
     virtual void onHTTPServerWebSocketConnection(
-        shared_ptr<WebSocketConnection> connection,
-        uint64_t windowHandle,
-        string csrfToken
+        shared_ptr<WebSocketConnection> connection
     ) = 0;
     virtual void onHTTPServerShutdownComplete() = 0;
 };

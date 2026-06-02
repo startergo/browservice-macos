@@ -6,6 +6,8 @@
 #include <Poco/Net/HTTPServerResponse.h>
 #include <Poco/Net/WebSocket.h>
 
+#include <atomic>
+
 namespace retrojsvice {
 
 class Window;
@@ -72,7 +74,7 @@ private:
     shared_ptr<TaskQueue> taskQueue_;
 
     mutex sendMutex_;
-    bool closed_;
+    atomic<bool> closed_;
 
     // Set via setCallbacks(); called on the API thread from postTask lambdas.
     function<void(int, int)> resizeCallback_;

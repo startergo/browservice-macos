@@ -55,7 +55,7 @@ function detectBrowserQuirks() {
     if(ua.indexOf("chrome") != -1 || ua.indexOf("chromium") != -1) {
         useOnMouseWheel = true;
     }
-    if(ua.indexOf("firefox") != -1) {
+    if(ua.indexOf("firefox") != -1 || ua.indexOf("gecko") != -1) {
         useOnDOMMouseScroll = true;
     }
     if(ua.indexOf("classilla") != -1) {
@@ -531,6 +531,8 @@ function registerEventHandlers() {
             var delta = event.wheelDelta | 0;
             putEvent("MWH_" + mouseX + "_" + mouseY + "_" + delta);
             applyMWHToScrollbar(delta);
+            if(event.preventDefault) event.preventDefault();
+            event.returnValue = false;
         };
     } else {
         document.onwheel = function(event) {
@@ -539,6 +541,7 @@ function registerEventHandlers() {
             if(event.deltaY < 0) delta = 120;
             putEvent("MWH_" + mouseX + "_" + mouseY + "_" + delta);
             applyMWHToScrollbar(delta);
+            if(event.preventDefault) event.preventDefault();
         };
     }
 

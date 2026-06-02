@@ -419,9 +419,7 @@ public:
                         postTask(
                             eventHandler_,
                             &HTTPServerEventHandler::onHTTPServerWebSocketConnection,
-                            conn,
-                            *handle,
-                            string()
+                            conn
                         );
 
                         // Block this thread on the WebSocket read loop

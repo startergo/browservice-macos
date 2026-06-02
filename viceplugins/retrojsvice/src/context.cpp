@@ -678,9 +678,7 @@ void Context::onHTTPServerRequest(shared_ptr<HTTPRequest> request) {
 }
 
 void Context::onHTTPServerWebSocketConnection(
-    shared_ptr<WebSocketConnection> connection,
-    uint64_t windowHandle,
-    string csrfToken
+    shared_ptr<WebSocketConnection> connection
 ) {
     REQUIRE_API_THREAD();
     REQUIRE(state_ == Running);
@@ -690,9 +688,7 @@ void Context::onHTTPServerWebSocketConnection(
         return;
     }
 
-    windowManager_->handleWebSocketConnection(
-        mce, connection, windowHandle, move(csrfToken)
-    );
+    windowManager_->handleWebSocketConnection(mce, connection);
 }
 
 void Context::onHTTPServerShutdownComplete() {
