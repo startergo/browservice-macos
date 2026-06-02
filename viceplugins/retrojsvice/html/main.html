@@ -87,6 +87,12 @@ var shutdown = false;
 var eventQueue = new Array();
 var eventQueueStartIdx = 0;
 
+// WebSocket state
+var ws = null;
+var wsMode = false;
+var wsImgLoadIdx = 0;
+var lastBlobUrl = null;
+
 var mouseMoved = false;
 var mouseX = 0;
 var mouseY = 0;
@@ -341,7 +347,16 @@ function encodeKey(key) {
 
 function putEvent(event) {
     eventQueue[eventQueue.length] = event;
-    newEventNotify();
+    if(wsMode && ws && ws.readyState === 1) {
+        // Send events immediately over WebSocket
+        var msg = '{"type":"events","startIdx":' + eventQueueStartIdx +
+                  ',"events":"' + eventQueue.join("/") + '/"}';
+        ws.send(msg);
+        eventQueueStartIdx += eventQueue.length;
+        eventQueue = new Array();
+    } else {
+        newEventNotify();
+    }
 }
 
 function updateMousePos(event) {
@@ -390,7 +405,19 @@ function registerEventHandlers() {
     imgElems[0].onload = function() { imgLoadHandler(0); };
     imgElems[1].onload = function() { imgLoadHandler(1); };
 
-    window.onresize = newEventNotify;
+    window.onresize = function() {
+        if(wsMode && ws && ws.readyState === 1) {
+            var w = document.body.clientWidth | 0;
+            var h = document.body.clientHeight | 0;
+            if(w == 0 || h == 0) {
+                w = window.innerWidth | 0;
+                h = window.innerHeight | 0;
+            }
+            ws.send('{"type":"resize","width":' + w + ',"height":' + h + '}');
+        } else {
+            newEventNotify();
+        }
+    };
 
     document.onmousedown = function(event) {
         if(!event) event = window.event;
@@ -560,6 +587,10 @@ function registerEventHandlers() {
 
         shutdown = true;
 
+        if(ws) {
+            ws.close();
+        }
+
         imgElems[0].src = "%-pathPrefix-%/close/%-mainIdx-%/";
         imgElems[1].src = "%-pathPrefix-%/close/%-mainIdx-%/";
 
@@ -577,8 +608,120 @@ window.onload = function() {
 
     registerEventHandlers();
 
-    startImgLoad();
+    // Try WebSocket first; fall back to HTTP polling
+    tryWebSocket();
+
+    // Safety net: if WebSocket doesn't connect within 1s, start HTTP polling
+    setTimeout(function() {
+        if(!wsMode) {
+            startImgLoad();
+        }
+    }, 1000);
 };
+
+// WebSocket connection
+function tryWebSocket() {
+    var proto = (window.location.protocol === 'https:') ? 'wss:' : 'ws:';
+    var wsUrl = proto + '//' + window.location.host + '%-pathPrefix-%/ws/';
+    try {
+        ws = new WebSocket(wsUrl);
+        ws.binaryType = 'blob';
+
+        ws.onopen = function() {
+            wsMode = true;
+            // Send initial resize
+            var w = document.body.clientWidth | 0;
+            var h = document.body.clientHeight | 0;
+            if(w == 0 || h == 0) {
+                w = window.innerWidth | 0;
+                h = window.innerHeight | 0;
+            }
+            ws.send('{"type":"resize","width":' + w + ',"height":' + h + '}');
+        };
+
+        ws.onmessage = function(evt) {
+            if(typeof evt.data === 'string') {
+                handleWSControlMessage(evt.data);
+            } else {
+                handleWSImage(evt.data);
+            }
+        };
+
+        ws.onclose = function() {
+            var wasWS = wsMode;
+            wsMode = false;
+            ws = null;
+            if(wasWS && !shutdown) {
+                // Lost WebSocket — fall back to HTTP polling
+                startImgLoad();
+            }
+        };
+
+        ws.onerror = function() {
+            wsMode = false;
+            // onclose will fire after onerror
+        };
+    } catch(e) {
+        // WebSocket not supported; HTTP polling will start via setTimeout
+    }
+}
+
+function handleWSImage(blob) {
+    var url = URL.createObjectURL(blob);
+
+    // Revoke previous blob to prevent memory leak
+    if(lastBlobUrl) {
+        URL.revokeObjectURL(lastBlobUrl);
+    }
+    lastBlobUrl = url;
+
+    // Double-buffering
+    wsImgLoadIdx++;
+    var idx = wsImgLoadIdx & 1;
+    imgElems[idx].src = url;
+    imgElems[idx].style.zIndex = 3;
+    imgElems[(idx) ^ 1].style.zIndex = 2;
+
+    // Send resize in case viewport changed
+    var w = document.body.clientWidth | 0;
+    var h = document.body.clientHeight | 0;
+    if(w == 0 || h == 0) {
+        w = window.innerWidth | 0;
+        h = window.innerHeight | 0;
+    }
+    if(ws && ws.readyState === 1) {
+        ws.send('{"type":"resize","width":' + w + ',"height":' + h + '}');
+    }
+}
+
+function handleWSControlMessage(msgStr) {
+    try {
+        var msg = JSON.parse(msgStr);
+        if(msg.type === 'frame') {
+            // Cursor signal
+            var cursor = msg.cursor;
+            var newClassName;
+            if(cursor == 0) newClassName = "handCursor";
+            else if(cursor == 1) newClassName = "normalCursor";
+            else newClassName = "textCursor";
+
+            var idx = wsImgLoadIdx & 1;
+            if(newClassName != imgElemClass[idx]) {
+                imgElemClass[idx] = newClassName;
+                imgElems[idx].className = newClassName;
+            }
+
+            // Iframe signal
+            if(msg.iframe === true) {
+                loadIframe();
+            }
+        } else if(msg.type === 'iframe') {
+            loadIframe();
+        }
+    } catch(e) {
+        // Ignore malformed control messages
+    }
+}
 
 </script>
 </head>

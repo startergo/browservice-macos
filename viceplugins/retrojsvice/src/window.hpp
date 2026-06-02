@@ -6,6 +6,7 @@
 namespace retrojsvice {
 
 class FileUpload;
+class WebSocketConnection;
 
 class WindowEventHandler {
 public:
@@ -77,6 +78,12 @@ public:
 
     void handleInitialForwardHTTPRequest(shared_ptr<HTTPRequest> request);
     void handleHTTPRequest(MCE, shared_ptr<HTTPRequest> request);
+
+    // Accept a WebSocket connection for this window
+    void handleWebSocketConnection(
+        MCE,
+        shared_ptr<WebSocketConnection> connection
+    );
 
     shared_ptr<Window> createPopup(uint64_t popupHandle);
 
@@ -223,6 +230,11 @@ private:
     bool inFileUploadMode_;
     bool fileUploadModeButtonPressed_;
     bool fileUploadModeButtonDown_;
+
+    // WebSocket streaming state
+    shared_ptr<WebSocketConnection> wsConnection_;
+    bool useWebSocket_;
+    uint64_t wsImgIdx_;
 };
 
 }

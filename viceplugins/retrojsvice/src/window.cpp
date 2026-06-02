@@ -7,6 +7,7 @@
 #include "key.hpp"
 #include "secrets.hpp"
 #include "upload.hpp"
+#include "websocket.hpp"
 
 namespace retrojsvice {
 
@@ -56,6 +57,9 @@ Window::Window(CKey,
     lastNavigateOperationTime_ = steady_clock::now();
 
     inFileUploadMode_ = false;
+
+    useWebSocket_ = false;
+    wsImgIdx_ = 0;
 
     // Initialization is completed in afterConstruct_
 }
@@ -292,6 +296,48 @@ void Window::notifyViewChanged() {
     });
 }
 
+void Window::handleWebSocketConnection(
+    MCE,
+    shared_ptr<WebSocketConnection> connection
+) {
+    REQUIRE_API_THREAD();
+    REQUIRE(!closed_);
+
+    // Close any existing WebSocket connection
+    if(wsConnection_) {
+        wsConnection_->close();
+    }
+
+    wsConnection_ = connection;
+    useWebSocket_ = true;
+
+    shared_ptr<Window> self = shared_from_this();
+
+    // Enable push mode on the image compressor to stream frames over WebSocket
+    imageCompressor_->setPushMode(mce,
+        [self](const vector<uint8_t>& imageData, bool isJPEG) {
+            REQUIRE_API_THREAD();
+            if(self->closed_ || !self->useWebSocket_ || !self->wsConnection_) {
+                return;
+            }
+
+            ++self->wsImgIdx_;
+            self->wsConnection_->sendImage(
+                imageData,
+                isJPEG,
+                self->wsImgIdx_,
+                self->width_,
+                self->height_,
+                self->imageCompressor_->CursorSignalNormal, // TODO: use actual cursor
+                false // TODO: use actual iframe signal
+            );
+        }
+    );
+
+    // Trigger a new frame to start streaming
+    imageCompressor_->updateNotify(mce);
+}
+
 void Window::setCursor(int cursorSignal) {
     REQUIRE_API_THREAD();
     REQUIRE(!closed_);
@@ -462,7 +508,7 @@ void Window::onImageCompressorRenderGUI(
 
 void Window::afterConstruct_(shared_ptr<Window> self) {
     imageCompressor_ = ImageCompressor::create(
-        self, milliseconds(2000), initialQuality_
+        self, milliseconds(150), initialQuality_
     );
 
     updateInactivityTimeout_();

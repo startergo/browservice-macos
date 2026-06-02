@@ -4,6 +4,7 @@
 #include "html.hpp"
 #include "secrets.hpp"
 #include "upload.hpp"
+#include "websocket.hpp"
 
 namespace retrojsvice {
 
@@ -667,6 +668,24 @@ void Context::onHTTPServerRequest(shared_ptr<HTTPRequest> request) {
     } else {
         windowManager_->handleHTTPRequest(mce, request);
     }
+}
+
+void Context::onHTTPServerWebSocketConnection(
+    shared_ptr<WebSocketConnection> connection,
+    uint64_t windowHandle,
+    string csrfToken
+) {
+    REQUIRE_API_THREAD();
+    REQUIRE(state_ == Running);
+
+    if(shutdownPhase_ != NoPendingShutdown) {
+        connection->close();
+        return;
+    }
+
+    windowManager_->handleWebSocketConnection(
+        mce, connection, windowHandle, move(csrfToken)
+    );
 }
 
 void Context::onHTTPServerShutdownComplete() {

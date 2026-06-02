@@ -1,12 +1,8 @@
 #include "jpeg.hpp"
 
-#include "jpeg.hpp"
-
-#include <cstdio>
 #include <iostream>
-#include <vector>
 
-#include <jpeglib.h>
+#include <turbojpeg.h>
 
 static void check(
     bool condVal,
@@ -33,54 +29,41 @@ JPEGData compressJPEG(
     CHECK(width > 0 && height > 0);
     CHECK(quality >= 1 && quality <= 100);
 
-    struct jpeg_compress_struct jpegCtx;
+    tjhandle handle = tjInitCompress();
+    CHECK(handle != nullptr);
 
-    struct jpeg_error_mgr jpegErrorManager;
-    jpegCtx.err = jpeg_std_error(&jpegErrorManager);
+    unsigned char* jpegBuf = nullptr;
+    unsigned long jpegSize = 0;
 
-    jpeg_create_compress(&jpegCtx);
-
-    uint8_t* outputBuf = nullptr;
-    unsigned long outputLength = 0;
-    jpeg_mem_dest(&jpegCtx, &outputBuf, &outputLength);
-
-    jpegCtx.image_width = width;
-    jpegCtx.image_height = height;
-    jpegCtx.input_components = 3;
-    jpegCtx.in_color_space = JCS_RGB;
-
-    jpeg_set_defaults(&jpegCtx);
-    jpeg_set_quality(&jpegCtx, quality, true);
-    if(quality <= 90) {
-        jpegCtx.dct_method = JDCT_IFAST;
+    // TurboJPEG pitch is in bytes (row stride). Our data is BGRA with 4 bytes
+    // per pixel. When pitch == width (tightly packed), pass 0 to use default.
+    int pitchBytes;
+    if(pitch == width) {
+        pitchBytes = 0; // turbojpeg default: width * tjPixelSize[TJPF_BGRA]
+    } else {
+        pitchBytes = (int)(pitch * 4);
     }
 
-    jpeg_start_compress(&jpegCtx, true);
+    int result = tjCompress2(
+        handle,
+        image,
+        (int)width,
+        pitchBytes,
+        (int)height,
+        TJPF_BGRA,
+        &jpegBuf,
+        &jpegSize,
+        TJSAMP_420,
+        quality,
+        0  // flags: default (no extra flags)
+    );
+    CHECK(result == 0);
 
-    std::vector<uint8_t> row(3 * width);
-    JSAMPROW rowPointer[1];
-    rowPointer[0] = row.data();
-
-    while(jpegCtx.next_scanline < height) {
-        const uint8_t* src = image + 4 * pitch * jpegCtx.next_scanline;
-        uint8_t* dest = row.data();
-        for(size_t x = 0; x < width; ++x) {
-            *(dest + 0) = *(src + 2);
-            *(dest + 1) = *(src + 1);
-            *(dest + 2) = *(src + 0);
-            src += 4;
-            dest += 3;
-        }
-        (void)jpeg_write_scanlines(&jpegCtx, rowPointer, 1);
-    }
-
-    jpeg_finish_compress(&jpegCtx);
+    tjDestroy(handle);
 
     JPEGData jpegData;
-    jpegData.data.reset(outputBuf);
-    jpegData.length = outputLength;
-
-    jpeg_destroy_compress(&jpegCtx);
+    jpegData.data.reset(jpegBuf);
+    jpegData.length = (size_t)jpegSize;
 
     return jpegData;
 }

@@ -67,6 +67,15 @@ public:
     // image available immediately
     void flush(MCE);
 
+    // Enable push mode: instead of waiting for sendCompressedImageWait calls,
+    // the compressor invokes the callback whenever a new compressed image is
+    // ready. Used for WebSocket streaming.
+    // imageData: raw JPEG or PNG bytes
+    // isJPEG: true for JPEG, false for PNG
+    void setPushMode(MCE,
+        function<void(const vector<uint8_t>& imageData, bool isJPEG)> callback
+    );
+
     // Functions for changing signal propagated in size of the
     // compressed image By default both are 1
     static constexpr int IframeSignalTrue = 0;
@@ -85,12 +94,19 @@ public:
 private:
     void afterConstruct_(shared_ptr<ImageCompressor> self);
 
+    // A CompressedImage is a callable that writes the image data to an HTTP
+    // response. In push mode, the callback wraps the data differently.
     typedef function<void(shared_ptr<HTTPRequest>)> CompressedImage;
 
     tuple<vector<uint8_t>, size_t, size_t> fetchImage_(MCE);
 
     void pump_(MCE);
-    void compressTaskDone_(MCE, CompressedImage compressedImage);
+    void compressTaskDone_(
+        MCE,
+        CompressedImage compressedImage,
+        shared_ptr<vector<uint8_t>> rawData,
+        bool isJPEG
+    );
 
     weak_ptr<ImageCompressorEventHandler> eventHandler_;
     steady_clock::duration sendTimeout_;
@@ -115,6 +131,10 @@ private:
     bool imageUpdated_;
     bool compressedImageUpdated_;
     bool compressionInProgress_;
+
+    // Push mode (WebSocket streaming)
+    bool pushMode_;
+    function<void(const vector<uint8_t>&, bool)> pushCallback_;
 };
 
 }

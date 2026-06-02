@@ -4,6 +4,8 @@
 
 namespace retrojsvice {
 
+class WebSocketConnection;
+
 class WindowManagerEventHandler {
 public:
     virtual variant<uint64_t, string> onWindowManagerCreateWindowRequest() = 0;
@@ -78,6 +80,14 @@ public:
     void close(MCE);
 
     void handleHTTPRequest(MCE, shared_ptr<HTTPRequest> request);
+
+    // Route a WebSocket connection to the appropriate window
+    void handleWebSocketConnection(
+        MCE,
+        shared_ptr<WebSocketConnection> connection,
+        uint64_t windowHandle,
+        string csrfToken
+    );
 
     bool createPopupWindow(
         uint64_t parentWindow,

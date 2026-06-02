@@ -38,6 +38,7 @@ target_include_directories(retrojsvice PRIVATE src)
 target_link_libraries(retrojsvice PRIVATE
     Poco::Foundation Poco::Net Poco::Util Poco::JSON
     JPEG::JPEG
+    turbojpeg
     ZLIB::ZLIB
     OpenSSL::Crypto
 )

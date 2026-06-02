@@ -1,6 +1,7 @@
 #include "window_manager.hpp"
 
 #include "http.hpp"
+#include "websocket.hpp"
 
 namespace retrojsvice {
 
@@ -87,6 +88,29 @@ void WindowManager::handleHTTPRequest(MCE, shared_ptr<HTTPRequest> request) {
     }
 
     request->sendTextResponse(400, "ERROR: Invalid request URI or method\n");
+}
+
+void WindowManager::handleWebSocketConnection(
+    MCE,
+    shared_ptr<WebSocketConnection> connection,
+    uint64_t windowHandle,
+    string csrfToken
+) {
+    REQUIRE_API_THREAD();
+
+    if(closed_) {
+        connection->close();
+        return;
+    }
+
+    auto it = windows_.find(windowHandle);
+    if(it == windows_.end()) {
+        connection->close();
+        return;
+    }
+
+    shared_ptr<Window> window = it->second;
+    window->handleWebSocketConnection(mce, connection);
 }
 
 bool WindowManager::createPopupWindow(

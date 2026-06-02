@@ -41,7 +41,8 @@ void serveWhiteJPEGPixel(shared_ptr<HTTPRequest> request) {
     );
 }
 
-function<void(shared_ptr<HTTPRequest>)> compressPNG_(
+pair<function<void(shared_ptr<HTTPRequest>)>, shared_ptr<vector<uint8_t>>>
+compressPNG_(
     vector<uint8_t> imageData,
     size_t imageWidth,
     size_t imageHeight,
@@ -65,7 +66,14 @@ function<void(shared_ptr<HTTPRequest>)> compressPNG_(
         length += chunk.size();
     }
 
-    return [png, length](shared_ptr<HTTPRequest> request) {
+    // Flatten PNG chunks into a single contiguous buffer for push mode
+    shared_ptr<vector<uint8_t>> raw = make_shared<vector<uint8_t>>();
+    raw->reserve(length);
+    for(const vector<uint8_t>& chunk : *png) {
+        raw->insert(raw->end(), chunk.begin(), chunk.end());
+    }
+
+    auto responseFunc = [png, length](shared_ptr<HTTPRequest> request) {
         REQUIRE_API_THREAD();
 
         request->sendResponse(
@@ -79,9 +87,12 @@ function<void(shared_ptr<HTTPRequest>)> compressPNG_(
             }
         );
     };
+
+    return {move(responseFunc), move(raw)};
 }
 
-function<void(shared_ptr<HTTPRequest>)> compressJPEG_(
+pair<function<void(shared_ptr<HTTPRequest>)>, shared_ptr<vector<uint8_t>>>
+compressJPEG_(
     vector<uint8_t> imageData,
     size_t imageWidth,
     size_t imageHeight,
@@ -98,7 +109,13 @@ function<void(shared_ptr<HTTPRequest>)> compressJPEG_(
         imageWidth,
         quality
     ));
-    return [jpeg](shared_ptr<HTTPRequest> request) {
+
+    // Copy raw JPEG bytes for push mode
+    shared_ptr<vector<uint8_t>> raw = make_shared<vector<uint8_t>>(
+        jpeg->data.get(), jpeg->data.get() + jpeg->length
+    );
+
+    auto responseFunc = [jpeg](shared_ptr<HTTPRequest> request) {
         REQUIRE_API_THREAD();
 
         request->sendResponse(
@@ -110,6 +127,8 @@ function<void(shared_ptr<HTTPRequest>)> compressJPEG_(
             }
         );
     };
+
+    return {move(responseFunc), move(raw)};
 }
 
 }
@@ -144,6 +163,7 @@ ImageCompressor::ImageCompressor(CKey,
     imageUpdated_ = false;
     compressedImageUpdated_ = false;
     compressionInProgress_ = false;
+    pushMode_ = false;
 }
 
 ImageCompressor::~ImageCompressor() {
@@ -239,6 +259,14 @@ void ImageCompressor::setCursorSignal(MCE, int signal) {
         cursorSignal_ = signal;
         updateNotify(mce);
     }
+}
+
+void ImageCompressor::setPushMode(MCE,
+    function<void(const vector<uint8_t>&, bool)> callback
+) {
+    REQUIRE_API_THREAD();
+    pushMode_ = true;
+    pushCallback_ = move(callback);
 }
 
 void ImageCompressor::afterConstruct_(shared_ptr<ImageCompressor> self) {
@@ -355,15 +383,27 @@ void ImageCompressor::pump_(MCE) {
         imageHeight
     ]() {
         CompressedImage compressedImage;
+        shared_ptr<vector<uint8_t>> rawData;
+        bool isJPEG;
+
         if(quality == 101) {
-            compressedImage =
-                compressPNG_(imageData, imageWidth, imageHeight, pngCompressor);
+            auto [func, raw] = compressPNG_(
+                imageData, imageWidth, imageHeight, pngCompressor
+            );
+            compressedImage = move(func);
+            rawData = move(raw);
+            isJPEG = false;
         } else {
-            compressedImage =
-                compressJPEG_(imageData, imageWidth, imageHeight, quality);
+            auto [func, raw] = compressJPEG_(
+                imageData, imageWidth, imageHeight, quality
+            );
+            compressedImage = move(func);
+            rawData = move(raw);
+            isJPEG = true;
         }
 
-        postTask(self, &ImageCompressor::compressTaskDone_, mce, compressedImage);
+        postTask(self, &ImageCompressor::compressTaskDone_,
+                 mce, compressedImage, rawData, isJPEG);
     };
 
     {
@@ -375,13 +415,25 @@ void ImageCompressor::pump_(MCE) {
     compressorCv_.notify_one();
 }
 
-void ImageCompressor::compressTaskDone_(MCE, CompressedImage compressedImage) {
+void ImageCompressor::compressTaskDone_(
+    MCE,
+    CompressedImage compressedImage,
+    shared_ptr<vector<uint8_t>> rawData,
+    bool isJPEG
+) {
     REQUIRE_API_THREAD();
     REQUIRE(compressionInProgress_);
 
     compressionInProgress_ = false;
     compressedImageUpdated_ = true;
     compressedImage_ = compressedImage;
+
+    if(pushMode_ && pushCallback_) {
+        compressedImageUpdated_ = false;
+        pushCallback_(*rawData, isJPEG);
+        pump_(mce);
+        return;
+    }
 
     flush(mce);
 }

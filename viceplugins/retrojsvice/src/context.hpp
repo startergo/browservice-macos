@@ -84,8 +84,13 @@ public:
     // Returns (name valSpec desc defaultValStr)-tuples
     static vector<tuple<string, string, string, string>> getOptionDocs();
 
-    // HTTPServerEventHandler - 
+    // HTTPServerEventHandler -
     virtual void onHTTPServerRequest(shared_ptr<HTTPRequest> request) override;
+    virtual void onHTTPServerWebSocketConnection(
+        shared_ptr<WebSocketConnection> connection,
+        uint64_t windowHandle,
+        string csrfToken
+    ) override;
     virtual void onHTTPServerShutdownComplete() override;
 
     // TaskQueueEventHandler - 
