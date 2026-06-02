@@ -464,29 +464,54 @@ function registerEventHandlers() {
         }
     };
 
+    // Mouse wheel / scroll event handler
+    function handleWheelEvent(event) {
+        if(!event) event = window.event;
+        var delta = 0;
+        // Try wheelDelta first (IE 6+, Chrome, old Opera)
+        if(typeof event.wheelDelta !== "undefined") {
+            delta = event.wheelDelta | 0;
+        }
+        // Try detail (Firefox DOMMouseScroll, old Gecko)
+        else if(typeof event.detail !== "undefined" && event.detail) {
+            delta = -120 * (event.detail | 0);
+        }
+        // Try deltaY (modern wheel event)
+        else if(typeof event.deltaY !== "undefined") {
+            if(event.deltaY > 0) delta = -120;
+            if(event.deltaY < 0) delta = 120;
+        }
+        if(delta !== 0) {
+            putEvent("MWH_" + mouseX + "_" + mouseY + "_" + delta);
+            if(event.preventDefault) {
+                event.preventDefault();
+            } else {
+                event.returnValue = false;
+            }
+        }
+    }
+
+    // Attach wheel events using all available methods for maximum compatibility
     if(useOnDOMMouseScroll) {
         document.addEventListener(
             "DOMMouseScroll",
-            function(event) {
-                var delta = -120 * (event.detail | 0);
-                putEvent("MWH_" + mouseX + "_" + mouseY + "_" + delta);
-                event.preventDefault();
-            },
+            handleWheelEvent,
             false
         );
-    } else if(useOnMouseWheel) {
-        document.onmousewheel = function(event) {
-            if(!event) event = window.event;
-            putEvent("MWH_" + mouseX + "_" + mouseY + "_" + (event.wheelDelta | 0));
-        };
-    } else {
-        document.onwheel = function(event) {
-            var delta = 0;
-            if(event.deltaY > 0) delta = -120;
-            if(event.deltaY < 0) delta = 120;
-            putEvent("MWH_" + mouseX + "_" + mouseY + "_" + delta);
-        };
     }
+    if(useOnMouseWheel || (typeof window.onmousewheel !== "undefined")) {
+        document.onmousewheel = handleWheelEvent;
+        // Also attach to window for IE 5/6 where document doesn't capture from images
+        window.onmousewheel = handleWheelEvent;
+    }
+    // Try modern wheel event
+    if(typeof document.onwheel !== "undefined" || (!useOnDOMMouseScroll && !useOnMouseWheel)) {
+        document.onwheel = handleWheelEvent;
+    }
+    // Fallback: attach directly to img elements for browsers where document events
+    // don't bubble from images (IE 5, very old Gecko)
+    imgElems[0].onmousewheel = handleWheelEvent;
+    imgElems[1].onmousewheel = handleWheelEvent;
 
     document.body.onmouseleave = function() {
         putEvent("MOUT_" + mouseX + "_" + mouseY);
