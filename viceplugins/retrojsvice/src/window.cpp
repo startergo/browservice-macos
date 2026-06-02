@@ -333,6 +333,12 @@ void Window::handleWebSocketConnection(
     REQUIRE_API_THREAD();
     REQUIRE(!closed_);
 
+    // Validate CSRF token (same check as handleHTTPRequest does for HTTP)
+    if(!passwordsEqual(connection->csrfToken(), csrfToken_)) {
+        connection->close();
+        return;
+    }
+
     // Close any existing WebSocket connection
     if(wsConnection_) {
         wsConnection_->close();
@@ -373,13 +379,13 @@ void Window::handleWebSocketConnection(
         }
     );
 
-    shared_ptr<Window> self = shared_from_this();
-
     // Enable push mode on the image compressor to stream frames over WebSocket
     imageCompressor_->setPushMode(mce,
-        [self](const vector<uint8_t>& imageData, bool isJPEG) {
+        [weakSelf](const vector<uint8_t>& imageData, bool isJPEG) {
             REQUIRE_API_THREAD();
-            if(self->closed_ || !self->useWebSocket_ || !self->wsConnection_) {
+            shared_ptr<Window> self = weakSelf.lock();
+            if(!self || self->closed_ || !self->useWebSocket_
+               || !self->wsConnection_) {
                 return;
             }
 
@@ -390,8 +396,9 @@ void Window::handleWebSocketConnection(
                 self->wsImgIdx_,
                 self->width_,
                 self->height_,
-                self->imageCompressor_->CursorSignalNormal, // TODO: use actual cursor
-                false // TODO: use actual iframe signal
+                self->imageCompressor_->cursorSignal(),
+                self->imageCompressor_->iframeSignal()
+                    != ImageCompressor::IframeSignalFalse
             );
         }
     );

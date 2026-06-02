@@ -96,6 +96,10 @@ public:
 
     void setCursorSignal(MCE, int signal);
 
+    // Accessors for current signal values (used by WebSocket push path)
+    int cursorSignal() const { return cursorSignal_; }
+    int iframeSignal() const { return iframeSignal_; }
+
 private:
     void afterConstruct_(shared_ptr<ImageCompressor> self);
 
