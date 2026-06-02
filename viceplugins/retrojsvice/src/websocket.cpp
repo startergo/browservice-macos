@@ -4,6 +4,7 @@
 #include "task_queue.hpp"
 
 #include <Poco/Net/WebSocket.h>
+#include <Poco/Base64Decoder.h>
 
 #include <cstring>
 #include <iostream>
@@ -23,6 +24,31 @@ WebSocketConnection::WebSocketConnection(CKey,
     taskQueue_(move(taskQueue)),
     closed_(false)
 {
+    // Extract HTTP Basic Auth credentials for validation by Context.
+    // Must decode from Base64 to match the "user:password" form stored in
+    // httpAuthCredentials_ and used by HTTPRequest::getBasicAuthCredentials().
+    try {
+        string scheme, authInfoBase64;
+        if(request.hasCredentials()) {
+            request.getCredentials(scheme, authInfoBase64);
+            for(char& c : scheme) {
+                c = tolower(c);
+            }
+            if(scheme == "basic") {
+                stringstream ss(authInfoBase64);
+                Poco::Base64Decoder decoder(ss);
+                char buf[1024];
+                while(decoder.good()) {
+                    decoder.read(buf, sizeof(buf));
+                    if(decoder.bad()) break;
+                    basicAuthCredentials_.append(buf, (size_t)decoder.gcount());
+                }
+            }
+        }
+    } catch(const Poco::Exception&) {
+        // No credentials or malformed header — leave empty
+    }
+
     INFO_LOG("WebSocket connection opened for window ", windowHandle_);
 }
 
@@ -64,21 +90,32 @@ void WebSocketConnection::readLoop_() {
                         size_t valStart = idxPos + 11; // len("\"startIdx\":")
                         size_t valEnd = msg.find(',', valStart);
                         if(valEnd == string::npos) valEnd = msg.find('}', valStart);
+                        if(valEnd == string::npos) valEnd = msg.size();
                         string idxStr = msg.substr(valStart, valEnd - valStart);
 
                         // Extract events string (between quotes)
-                        size_t evtValStart = msg.find('"', evtPos + 10) + 1;
-                        size_t evtValEnd = msg.find('"', evtValStart);
-                        string evtStr = msg.substr(evtValStart, evtValEnd - evtValStart);
+                        size_t evtQuoteStart = msg.find('"', evtPos + 10);
+                        if(evtQuoteStart != string::npos) {
+                            size_t evtValStart = evtQuoteStart + 1;
+                            size_t evtValEnd = msg.find('"', evtValStart);
+                            if(evtValEnd != string::npos && evtValEnd >= evtValStart) {
+                                string evtStr = msg.substr(
+                                    evtValStart, evtValEnd - evtValStart
+                                );
 
-                        optional<uint64_t> startIdx = parseString<uint64_t>(idxStr);
-                        if(startIdx) {
-                            auto self = shared_from_this();
-                            postTask([self, idx{*startIdx}, evtStr{move(evtStr)}]() mutable {
-                                REQUIRE_API_THREAD();
-                                if(self->closed_ || !self->eventsCallback_) return;
-                                self->eventsCallback_(idx, move(evtStr));
-                            });
+                                optional<uint64_t> startIdx =
+                                    parseString<uint64_t>(idxStr);
+                                if(startIdx) {
+                                    auto self = shared_from_this();
+                                    postTask([self, idx{*startIdx},
+                                              evtStr{move(evtStr)}]() mutable {
+                                        REQUIRE_API_THREAD();
+                                        if(self->closed_ || !self->eventsCallback_)
+                                            return;
+                                        self->eventsCallback_(idx, move(evtStr));
+                                    });
+                                }
+                            }
                         }
                     }
                 } else if(msg.find("\"type\":\"resize\"") != string::npos) {

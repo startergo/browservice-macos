@@ -838,7 +838,7 @@ function handleWSControlMessage(msgStr) {
             else if(cursor == 1) newClassName = "normalCursor";
             else newClassName = "textCursor";
 
-            var idx = wsImgLoadIdx & 1;
+            var idx = (wsImgLoadIdx + 1) & 1;
             if(newClassName != imgElemClass[idx]) {
                 imgElemClass[idx] = newClassName;
                 imgElems[idx].className = newClassName;

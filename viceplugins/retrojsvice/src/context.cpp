@@ -683,6 +683,17 @@ void Context::onHTTPServerWebSocketConnection(
     REQUIRE_API_THREAD();
     REQUIRE(state_ == Running);
 
+    // Validate HTTP Basic Auth (same check as onHTTPServerRequest)
+    if(!httpAuthCredentials_.empty()) {
+        if(!passwordsEqual(
+            connection->basicAuthCredentials(),
+            httpAuthCredentials_
+        )) {
+            connection->close();
+            return;
+        }
+    }
+
     if(shutdownPhase_ != NoPendingShutdown) {
         connection->close();
         return;

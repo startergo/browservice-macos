@@ -64,6 +64,7 @@ public:
 
     uint64_t windowHandle() { return windowHandle_; }
     const string& csrfToken() { return csrfToken_; }
+    const string& basicAuthCredentials() { return basicAuthCredentials_; }
 
 private:
     void readLoop_();
@@ -71,6 +72,7 @@ private:
     Poco::Net::WebSocket ws_;
     uint64_t windowHandle_;
     string csrfToken_;
+    string basicAuthCredentials_;
     shared_ptr<TaskQueue> taskQueue_;
 
     mutex sendMutex_;
