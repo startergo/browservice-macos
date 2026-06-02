@@ -455,6 +455,13 @@ void Context::notifyWindowViewChanged(uint64_t window) {
     windowManager_->notifyViewChanged(window);
 }
 
+void Context::notifyWindowNavigation(uint64_t window) {
+    RunningAPILock apiLock(this);
+    REQUIRE(!threadRunningPumpEvents);
+
+    windowManager_->notifyNavigation(window);
+}
+
 void Context::setWindowCursor(
     uint64_t window,
     VicePluginAPI_MouseCursor cursor

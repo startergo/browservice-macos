@@ -84,6 +84,11 @@ public:
 
     void setIframeSignal(MCE, int signal);
 
+    // One-shot navigate signal encoded in img.width % 4 >= 2.
+    // Set it once; it is automatically cleared after the next compressed frame.
+    static constexpr int NavigateSignalCount = 2;
+    void setNavigateSignal(MCE);
+
     static constexpr int CursorSignalHand = 0;
     static constexpr int CursorSignalNormal = 1;
     static constexpr int CursorSignalText = 2;
@@ -114,6 +119,7 @@ private:
 
     int iframeSignal_;
     int cursorSignal_;
+    int navigateSignal_;  // one-shot, cleared by fetchImage_ after encoding
 
     shared_ptr<PNGCompressor> pngCompressor_;
 

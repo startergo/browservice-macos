@@ -20,6 +20,7 @@ public:
     virtual void onWindowCleanupComplete(uint64_t handle) = 0;
     virtual void onWindowViewImageChanged(uint64_t handle) = 0;
     virtual void onWindowTitleChanged(uint64_t handle) = 0;
+    virtual void onWindowNavigationStarted(uint64_t handle) = 0;
     virtual void onWindowCursorChanged(uint64_t handle, int cursor) = 0;
     virtual optional<pair<vector<string>, size_t>> onWindowQualitySelectorQuery(
         uint64_t handle

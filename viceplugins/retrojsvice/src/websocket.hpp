@@ -30,6 +30,15 @@ public:
     // thread; this method blocks until the WebSocket closes.
     void run();
 
+    // Set callbacks invoked on the API thread for incoming client messages.
+    // Must be called before run().  Ordering is guaranteed: the
+    // handleWebSocketConnection postTask fires before any readLoop_ message
+    // tasks, so callbacks are always set by the time they are needed.
+    void setCallbacks(
+        function<void(int width, int height)> resizeCb,
+        function<void(uint64_t startIdx, string events)> eventsCb
+    );
+
     // Called from API thread to push a compressed image frame.
     // imageData contains raw JPEG or PNG bytes.
     void sendImage(
@@ -44,6 +53,9 @@ public:
 
     // Called from API thread to push an iframe notification.
     void sendIframeNotification();
+
+    // Called from API thread to tell the client to reset its scrollbar to the top.
+    void sendScrollReset();
 
     // Close the WebSocket connection.
     void close();
@@ -61,6 +73,10 @@ private:
 
     mutex sendMutex_;
     bool closed_;
+
+    // Set via setCallbacks(); called on the API thread from postTask lambdas.
+    function<void(int, int)> resizeCallback_;
+    function<void(uint64_t, string)> eventsCallback_;
 };
 
 }

@@ -349,6 +349,14 @@ void Server::onWindowViewImageChanged(uint64_t handle) {
     viceCtx_->notifyWindowViewChanged(handle);
 }
 
+void Server::onWindowNavigationStarted(uint64_t handle) {
+    REQUIRE_UI_THREAD();
+    REQUIRE(state_ != ShutdownComplete);
+    REQUIRE(openWindows_.count(handle));
+
+    viceCtx_->notifyWindowNavigation(handle);
+}
+
 void Server::onWindowTitleChanged(uint64_t handle) {
     REQUIRE_UI_THREAD();
     REQUIRE(state_ != ShutdownComplete);

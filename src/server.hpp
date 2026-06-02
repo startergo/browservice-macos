@@ -75,6 +75,7 @@ public:
     virtual void onWindowCleanupComplete(uint64_t handle) override;
     virtual void onWindowViewImageChanged(uint64_t handle) override;
     virtual void onWindowTitleChanged(uint64_t handle) override;
+    virtual void onWindowNavigationStarted(uint64_t handle) override;
     virtual void onWindowCursorChanged(uint64_t handle, int cursor) override;
     virtual optional<pair<vector<string>, size_t>> onWindowQualitySelectorQuery(
         uint64_t handle

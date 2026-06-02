@@ -96,6 +96,7 @@ public:
     );
     void closeWindow(uint64_t window);
     void notifyViewChanged(uint64_t window);
+    void notifyNavigation(uint64_t window);
 
     void setCursor(uint64_t window, int cursorSignal);
 

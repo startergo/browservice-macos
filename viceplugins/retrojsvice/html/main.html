@@ -4,9 +4,6 @@
 <meta http-equiv="imagetoolbar" content="no">
 <style>
 body {
-    overflow: hidden;
-    margin: 0;
-    padding: 0;
 }
 img {
     position: absolute;
@@ -36,55 +33,6 @@ input {
 .textCursor {
     cursor: text;
 }
-#scrollbar {
-    position: absolute;
-    right: 0;
-    top: 0;
-    width: 18px;
-    height: 100%;
-    z-index: 10;
-    background: #e0e0e0;
-    border-left: 1px solid #999;
-}
-#scrollTrack {
-    position: absolute;
-    right: 3px;
-    top: 20px;
-    width: 12px;
-    bottom: 20px;
-    background: #ccc;
-    border: 1px solid #999;
-    cursor: pointer;
-}
-#scrollThumb {
-    position: absolute;
-    left: 0;
-    top: 0;
-    width: 100%;
-    height: 30px;
-    background: #aaa;
-    border: 1px solid #777;
-    cursor: pointer;
-}
-#scrollUp, #scrollDown {
-    position: absolute;
-    right: 0;
-    width: 18px;
-    height: 20px;
-    z-index: 11;
-    background: #d0d0d0;
-    border: 1px solid #999;
-    text-align: center;
-    font-size: 10px;
-    line-height: 20px;
-    font-family: sans-serif;
-    cursor: pointer;
-    cursor: hand;
-    color: #333;
-    user-select: none;
-}
-#scrollUp { top: 0; }
-#scrollDown { bottom: 0; }
 </style>
 <script type="text/javascript">
 
@@ -107,8 +55,7 @@ function detectBrowserQuirks() {
     if(ua.indexOf("chrome") != -1 || ua.indexOf("chromium") != -1) {
         useOnMouseWheel = true;
     }
-    // Detect Gecko-based browsers: Firefox, RetroZilla, Camino, SeaMonkey, etc.
-    if(ua.indexOf("firefox") != -1 || ua.indexOf("gecko") != -1) {
+    if(ua.indexOf("firefox") != -1) {
         useOnDOMMouseScroll = true;
     }
     if(ua.indexOf("classilla") != -1) {
@@ -148,6 +95,44 @@ var lastBlobUrl = null;
 var mouseMoved = false;
 var mouseX = 0;
 var mouseY = 0;
+
+// Last known viewport dimensions (set during image requests, used by onscroll)
+var lastVpWidth = 1;
+var lastVpHeight = 1;
+
+// Scrollbar state — only used when !bodyOverflowHiddenNotSupported
+var scrollbarY = 0;           // current scrollbar position (0–9800)
+var scrollbarProgrammatic = false;  // true while a programmatic scrollTo is in flight
+
+// Called after every MWH event so the scrollbar tracks all scroll sources
+// (trackpad gestures, mouse wheel, scrollbar drag already handled by onscroll).
+// Auto-resets near the edges so continuous/infinite-scroll pages never stall.
+function applyMWHToScrollbar(delta) {
+    if(bodyOverflowHiddenNotSupported || !imgElems[0]) return;
+    var newY = (scrollbarY - ((delta | 0) / 3)) | 0;
+    // Near either edge: jump to midpoint so there is always room to scroll both ways
+    if(newY > 9000 || newY < 1000) newY = 5000;
+    newY = Math.max(0, Math.min(9800, newY));
+    if(newY === scrollbarY) return;
+    scrollbarProgrammatic = true;
+    scrollbarY = newY;
+    imgElems[0].style.top = newY + "px";
+    imgElems[1].style.top = newY + "px";
+    window.scrollTo(0, newY);
+}
+
+// Reset the scrollbar to the top (called on navigation to a new page).
+function resetScrollbar() {
+    if(bodyOverflowHiddenNotSupported || !imgElems[0]) return;
+    scrollbarProgrammatic = true;
+    scrollbarY = 0;
+    imgElems[0].style.top = "0px";
+    imgElems[1].style.top = "0px";
+    window.scrollTo(0, 0);
+    // Briefly show in title so we can confirm this fires during testing.
+    document.title = "%-programName-%: SCROLL RESET";
+    setTimeout(function() { document.title = "%-programName-%"; }, 1500);
+}
 
 // Iframe loading system
 var nextAllowedIframeLoadTime = new Date().getTime();
@@ -246,18 +231,9 @@ function sendImgReq(imgLoadIdx) {
         mouseMoved = false;
     }
 
-    var width = document.body.clientWidth | 0;
-    var height = document.body.clientHeight | 0;
-    if(width == 0 || height == 0) {
-        width = window.innerWidth | 0;
-        height = window.innerHeight | 0;
-    }
-    if(bodyOverflowHiddenNotSupported) {
-        width -= 1;
-        height -= 2;
-    }
-    width = Math.max(width, 1);
-    height = Math.max(height, 1);
+    // Use stored viewport dimensions (measured before spacer was added)
+    var width = lastVpWidth;
+    var height = lastVpHeight;
 
     var immediate = ((firstImgReqSent || imgReqIdx == 0) ? 1 : 0);
     firstImgReqSent = true;
@@ -327,11 +303,17 @@ function postImgLoadHandler(imgLoadIdx) {
     postImgLoadHandlerSchedIdx = null;
 
     if(imgLoadIdx >= 3) {
+        // iframe signal: width % 2 == 0  (unchanged — % 4 % 2 == % 2 always)
         if(imgElems[imgLoadIdx & 1].width % 2 == 0) {
             loadIframe();
         } else {
             cancelIframeLoad();
         }
+    }
+
+    // Navigate signal: width % 4 >= 2 (one-shot, server sets on page load)
+    if(imgLoadIdx >= 1 && imgElems[imgLoadIdx & 1].width % 4 >= 2) {
+        resetScrollbar();
     }
 
     updateCursor(imgLoadIdx & 1);
@@ -458,14 +440,30 @@ function registerEventHandlers() {
     imgElems[1].onload = function() { imgLoadHandler(1); };
 
     window.onresize = function() {
+        // The spacer (10000px) exists by now, so document.body.clientHeight is
+        // unreliable — it may return the full content height instead of the viewport.
+        // Priority: window.innerWidth/Height (always viewport, all modern browsers)
+        //   → documentElement.clientWidth/Height (IE 6-8 standards mode)
+        //   → document.body.clientWidth/Height (IE 4-5 quirks mode, where body IS viewport)
+        var vpW, vpH;
+        if(window.innerWidth) {
+            vpW = window.innerWidth | 0;
+            vpH = window.innerHeight | 0;
+        } else if(document.documentElement && document.documentElement.clientWidth) {
+            vpW = document.documentElement.clientWidth | 0;
+            vpH = document.documentElement.clientHeight | 0;
+        } else {
+            vpW = document.body.clientWidth | 0;
+            vpH = document.body.clientHeight | 0;
+        }
+        if(bodyOverflowHiddenNotSupported) {
+            vpW -= 1;
+            vpH -= 2;
+        }
+        lastVpWidth = Math.max(vpW, 1);
+        lastVpHeight = Math.max(vpH, 1);
         if(wsMode && ws && ws.readyState === 1) {
-            var w = document.body.clientWidth | 0;
-            var h = document.body.clientHeight | 0;
-            if(w == 0 || h == 0) {
-                w = window.innerWidth | 0;
-                h = window.innerHeight | 0;
-            }
-            ws.send('{"type":"resize","width":' + w + ',"height":' + h + '}');
+            ws.send('{"type":"resize","width":' + lastVpWidth + ',"height":' + lastVpHeight + '}');
         } else {
             newEventNotify();
         }
@@ -516,44 +514,33 @@ function registerEventHandlers() {
         }
     };
 
-    // Mouse wheel / scroll event handler
-    function handleWheelEvent(event) {
-        if(!event) event = window.event;
-        var delta = 0;
-        // Try wheelDelta first (IE 6+, Chrome, old Opera)
-        if(typeof event.wheelDelta !== "undefined") {
-            delta = event.wheelDelta | 0;
-        }
-        // Try detail (Firefox DOMMouseScroll, old Gecko)
-        else if(typeof event.detail !== "undefined" && event.detail) {
-            delta = -120 * (event.detail | 0);
-        }
-        // Try deltaY (modern wheel event)
-        else if(typeof event.deltaY !== "undefined") {
+    if(useOnDOMMouseScroll) {
+        document.addEventListener(
+            "DOMMouseScroll",
+            function(event) {
+                var delta = -120 * (event.detail | 0);
+                putEvent("MWH_" + mouseX + "_" + mouseY + "_" + delta);
+                applyMWHToScrollbar(delta);
+                event.preventDefault();
+            },
+            false
+        );
+    } else if(useOnMouseWheel) {
+        document.onmousewheel = function(event) {
+            if(!event) event = window.event;
+            var delta = event.wheelDelta | 0;
+            putEvent("MWH_" + mouseX + "_" + mouseY + "_" + delta);
+            applyMWHToScrollbar(delta);
+        };
+    } else {
+        document.onwheel = function(event) {
+            var delta = 0;
             if(event.deltaY > 0) delta = -120;
             if(event.deltaY < 0) delta = 120;
-        }
-        if(delta !== 0) {
             putEvent("MWH_" + mouseX + "_" + mouseY + "_" + delta);
-            if(event.preventDefault) {
-                event.preventDefault();
-            } else {
-                event.returnValue = false;
-            }
-        }
+            applyMWHToScrollbar(delta);
+        };
     }
-
-    // Attach wheel events using ALL available methods for maximum compatibility.
-    // Multiple handlers are fine — handleWheelEvent is idempotent per event.
-    try { document.addEventListener("DOMMouseScroll", handleWheelEvent, false); } catch(e) {}
-    try { window.addEventListener("DOMMouseScroll", handleWheelEvent, false); } catch(e) {}
-    document.onmousewheel = handleWheelEvent;
-    window.onmousewheel = handleWheelEvent;
-    try { document.onwheel = handleWheelEvent; } catch(e) {}
-    // Direct img element attachment for browsers where document events
-    // don't bubble from images
-    imgElems[0].onmousewheel = handleWheelEvent;
-    imgElems[1].onmousewheel = handleWheelEvent;
 
     document.body.onmouseleave = function() {
         putEvent("MOUT_" + mouseX + "_" + mouseY);
@@ -664,101 +651,6 @@ function registerEventHandlers() {
         var start = new Date().getTime();
         while(new Date().getTime() - start < 50) {}
     };
-
-    // Scroll button handlers - works on ALL browsers including IE 5 with no mouse wheel
-    var scrollRepeatTimer = null;
-    var scrollRepeatDir = 0;
-
-    function startScrollRepeat(delta) {
-        stopScrollRepeat();
-        scrollRepeatDir = delta;
-        putEvent("MWH_" + (document.body.clientWidth | 0) + "_" + ((document.body.clientHeight | 0) / 2 | 0) + "_" + delta);
-        scrollRepeatTimer = setInterval(function() {
-            putEvent("MWH_" + (document.body.clientWidth | 0) + "_" + ((document.body.clientHeight | 0) / 2 | 0) + "_" + scrollRepeatDir);
-        }, 100);
-    }
-
-    function stopScrollRepeat() {
-        if(scrollRepeatTimer) {
-            clearInterval(scrollRepeatTimer);
-            scrollRepeatTimer = null;
-        }
-    }
-
-    var scrollUpBtn = document.getElementById("scrollUp");
-    var scrollDownBtn = document.getElementById("scrollDown");
-    var scrollTrack = document.getElementById("scrollTrack");
-    var scrollThumb = document.getElementById("scrollThumb");
-
-    if(scrollUpBtn) {
-        scrollUpBtn.onmousedown = function(event) {
-            if(event) { event.cancelBubble = true; } else { window.event.cancelBubble = true; }
-            startScrollRepeat(120);
-        };
-        scrollUpBtn.onmouseup = stopScrollRepeat;
-        scrollUpBtn.onmouseout = stopScrollRepeat;
-    }
-    if(scrollDownBtn) {
-        scrollDownBtn.onmousedown = function(event) {
-            if(event) { event.cancelBubble = true; } else { window.event.cancelBubble = true; }
-            startScrollRepeat(-120);
-        };
-        scrollDownBtn.onmouseup = stopScrollRepeat;
-        scrollDownBtn.onmouseout = stopScrollRepeat;
-    }
-
-    // Click on track to jump-scroll
-    if(scrollTrack) {
-        scrollTrack.onclick = function(event) {
-            if(!event) event = window.event;
-            // Click in upper half = page up, lower half = page down
-            var trackHeight = scrollTrack.offsetHeight || 100;
-            var clickY = (event.offsetY != null) ? event.offsetY :
-                         ((event.clientY || 0) - (scrollTrack.offsetTop || 0));
-            var delta = (clickY < trackHeight / 2) ? 1200 : -1200;
-            putEvent("MWH_" + (document.body.clientWidth | 0) + "_" + ((document.body.clientHeight | 0) / 2 | 0) + "_" + delta);
-        };
-    }
-
-    // Drag scrollbar thumb to scroll
-    var thumbDragging = false;
-    var thumbStartY = 0;
-    var savedOnMouseMove = document.onmousemove;
-    var savedOnMouseUp = document.onmouseup;
-
-    if(scrollThumb) {
-        scrollThumb.onmousedown = function(event) {
-            if(!event) event = window.event;
-            thumbDragging = true;
-            thumbStartY = (event.clientY || 0);
-            if(event.preventDefault) event.preventDefault();
-            else event.returnValue = false;
-            return false;
-        };
-    }
-
-    // Wrap existing onmousemove/onmouseup to also handle thumb drag
-    document.onmousemove = function(event) {
-        if(thumbDragging) {
-            if(!event) event = window.event;
-            var dy = (event.clientY || 0) - thumbStartY;
-            if(Math.abs(dy) > 5) {
-                var delta = (dy > 0) ? -360 : 360;
-                putEvent("MWH_" + (document.body.clientWidth | 0) + "_" + ((document.body.clientHeight | 0) / 2 | 0) + "_" + delta);
-                thumbStartY = (event.clientY || 0);
-            }
-            return;
-        }
-        if(savedOnMouseMove) savedOnMouseMove(event);
-    };
-
-    document.onmouseup = function(event) {
-        if(thumbDragging) {
-            thumbDragging = false;
-            return;
-        }
-        if(savedOnMouseUp) savedOnMouseUp(event);
-    };
 }
 
 // Entry point
@@ -768,12 +660,100 @@ window.onload = function() {
     imgElems[0] = document.images[0];
     imgElems[1] = document.images[1];
 
+    // Measure viewport BEFORE adding spacer so clientHeight returns
+    // the actual viewport, not the content height (10000px).
+    lastVpWidth = document.body.clientWidth | 0;
+    lastVpHeight = document.body.clientHeight | 0;
+    if(lastVpWidth == 0 || lastVpHeight == 0) {
+        lastVpWidth = window.innerWidth | 0;
+        lastVpHeight = window.innerHeight | 0;
+    }
+    if(bodyOverflowHiddenNotSupported) {
+        lastVpWidth -= 1;
+        lastVpHeight -= 2;
+    }
+    lastVpWidth = Math.max(lastVpWidth, 1);
+    lastVpHeight = Math.max(lastVpHeight, 1);
+
+    // Add spacer for native scrollbar only on browsers that support scroll-to.
+    // Very old browsers (bodyOverflowHiddenNotSupported) rely on mouse wheel only.
+    if(!bodyOverflowHiddenNotSupported) {
+        var spacer = document.createElement("div");
+        spacer.style.height = "10000px";
+        document.body.appendChild(spacer);
+    }
+
     registerEventHandlers();
 
-    // Try WebSocket first; fall back to HTTP polling
+    // Convert native scrollbar drags to MWH events for CEF.
+    // position:absolute images must track scrollY manually via style.top so
+    // they stay pinned to the viewport on every browser (including IE 6 which
+    // has no position:fixed support).
+    if(!bodyOverflowHiddenNotSupported) {
+        window.onscroll = function() {
+            if(shutdown) return;
+            var scrollY = (typeof window.pageYOffset !== "undefined") ? (window.pageYOffset | 0) :
+                          ((typeof document.documentElement !== "undefined" && document.documentElement.scrollTop) ? (document.documentElement.scrollTop | 0) :
+                          ((typeof document.body !== "undefined" && document.body.scrollTop) ? (document.body.scrollTop | 0) : 0));
+            if(scrollbarProgrammatic) {
+                // Scroll was initiated by applyMWHToScrollbar or resetScrollbar — just sync and skip.
+                scrollbarProgrammatic = false;
+                scrollbarY = scrollY;
+                return;
+            }
+            var dy = scrollY - scrollbarY;
+            scrollbarY = scrollY;
+            if(dy !== 0) {
+                // Keep images pinned to viewport top while spacer scrolls behind.
+                imgElems[0].style.top = scrollY + "px";
+                imgElems[1].style.top = scrollY + "px";
+                var delta = -Math.min(Math.abs(dy) * 3, 1200);
+                if(dy < 0) delta = -delta;
+                var cx = (lastVpWidth / 2) | 0;
+                var cy = (lastVpHeight / 2) | 0;
+                putEvent("MWH_" + cx + "_" + cy + "_" + delta);
+                // Auto-spring to midpoint when near either edge, same as applyMWHToScrollbar,
+                // so the user can always keep scrolling without manually dragging back.
+                if(scrollY > 9000 || scrollY < 1000) {
+                    scrollbarProgrammatic = true;
+                    scrollbarY = 5000;
+                    imgElems[0].style.top = "5000px";
+                    imgElems[1].style.top = "5000px";
+                    window.scrollTo(0, 5000);
+                }
+            }
+        };
+    }
+
+    // Prevent browser scroll-restoration from putting the scrollbar at a
+    // non-zero position after the client browser reloads main.html.
+    // history.scrollRestoration stops modern browsers from restoring at all.
+    // The delayed scrollTo(0,0) catches browsers that restore *after* onload.
+    if(window.history && window.history.scrollRestoration) {
+        window.history.scrollRestoration = 'manual';
+    }
+    if(!bodyOverflowHiddenNotSupported) {
+        scrollbarProgrammatic = true;
+        scrollbarY = 0;
+        imgElems[0].style.top = "0px";
+        imgElems[1].style.top = "0px";
+        window.scrollTo(0, 0);
+        // Second pass after 300 ms to catch browsers that restore scroll
+        // asynchronously after window.onload has already returned.
+        setTimeout(function() {
+            if(shutdown) return;
+            scrollbarProgrammatic = true;
+            scrollbarY = 0;
+            imgElems[0].style.top = "0px";
+            imgElems[1].style.top = "0px";
+            window.scrollTo(0, 0);
+        }, 300);
+    }
+
+    // Try WebSocket first for lower-latency image push + event delivery.
+    // Falls back to HTTP polling if WebSocket is unavailable or fails.
     tryWebSocket();
 
-    // Safety net: if WebSocket doesn't connect within 1s, start HTTP polling
     setTimeout(function() {
         if(!wsMode) {
             startImgLoad();
@@ -792,13 +772,7 @@ function tryWebSocket() {
         ws.onopen = function() {
             wsMode = true;
             // Send initial resize
-            var w = document.body.clientWidth | 0;
-            var h = document.body.clientHeight | 0;
-            if(w == 0 || h == 0) {
-                w = window.innerWidth | 0;
-                h = window.innerHeight | 0;
-            }
-            ws.send('{"type":"resize","width":' + w + ',"height":' + h + '}');
+            ws.send('{"type":"resize","width":' + lastVpWidth + ',"height":' + lastVpHeight + '}');
         };
 
         ws.onmessage = function(evt) {
@@ -845,14 +819,8 @@ function handleWSImage(blob) {
     imgElems[(idx) ^ 1].style.zIndex = 2;
 
     // Send resize in case viewport changed
-    var w = document.body.clientWidth | 0;
-    var h = document.body.clientHeight | 0;
-    if(w == 0 || h == 0) {
-        w = window.innerWidth | 0;
-        h = window.innerHeight | 0;
-    }
     if(ws && ws.readyState === 1) {
-        ws.send('{"type":"resize","width":' + w + ',"height":' + h + '}');
+        ws.send('{"type":"resize","width":' + lastVpWidth + ',"height":' + lastVpHeight + '}');
     }
 }
 
@@ -879,6 +847,8 @@ function handleWSControlMessage(msgStr) {
             }
         } else if(msg.type === 'iframe') {
             loadIframe();
+        } else if(msg.type === 'scroll_reset') {
+            resetScrollbar();
         }
     } catch(e) {
         // Ignore malformed control messages
@@ -890,11 +860,6 @@ function handleWSControlMessage(msgStr) {
 <body>
 <img>
 <img>
-<div id="scrollbar">
-<div id="scrollUp">&#9650;</div>
-<div id="scrollTrack"><div id="scrollThumb"></div></div>
-<div id="scrollDown">&#9660;</div>
-</div>
 <form></form>
 <form></form>
 <form></form>

@@ -148,6 +148,7 @@ ImageCompressor::ImageCompressor(CKey,
 
     iframeSignal_ = 1;
     cursorSignal_ = 1;
+    navigateSignal_ = 0;
 
     int pngThreadCount = (int)thread::hardware_concurrency();
     pngThreadCount = min(pngThreadCount, 4);
@@ -261,6 +262,13 @@ void ImageCompressor::setCursorSignal(MCE, int signal) {
     }
 }
 
+void ImageCompressor::setNavigateSignal(MCE) {
+    REQUIRE_API_THREAD();
+
+    navigateSignal_ = 1;
+    updateNotify(mce);
+}
+
 void ImageCompressor::setPushMode(MCE,
     function<void(const vector<uint8_t>&, bool)> callback
 ) {
@@ -320,7 +328,17 @@ tuple<vector<uint8_t>, size_t, size_t> ImageCompressor::fetchImage_(MCE) {
             width = srcWidth;
             height = srcHeight;
 
-            while((int)(width % (size_t)IframeSignalCount) != iframeSignal_) {
+            // Encode both iframe and navigate signals in width % 4.
+            // Combined = iframeSignal + IframeSignalCount * navigateSignal (0–3).
+            // Client: iframe = combined % 2,  navigate = combined >= 2.
+            // navigateSignal_ is one-shot: cleared here after encoding.
+            int combinedWidthSignal =
+                iframeSignal_ + IframeSignalCount * navigateSignal_;
+            navigateSignal_ = 0;
+            while(
+                (int)(width % (size_t)(IframeSignalCount * NavigateSignalCount))
+                != combinedWidthSignal
+            ) {
                 ++width;
             }
             while((int)(height % (size_t)CursorSignalCount) != cursorSignal_) {

@@ -296,6 +296,28 @@ void Window::notifyViewChanged() {
     });
 }
 
+void Window::notifyNavigation(MCE) {
+    REQUIRE_API_THREAD();
+    if(closed_) return;
+
+    INFO_LOG("Window ", handle_, ": notifyNavigation called — deferring navigate signal");
+
+    // Defer via postTask so the actual signal fires during the next pumpEvents()
+    // call, AFTER the current CEF operation (which may be JavaScript execution
+    // triggered by pushState/OnAddressChange) has completed.  This avoids the
+    // re-entrant CEF image fetch that causes EXC_BREAKPOINT when called
+    // synchronously from within the V8 engine.
+    shared_ptr<Window> self = shared_from_this();
+    postTask([self]() {
+        if(self->closed_) return;
+        INFO_LOG("Window ", self->handle_, ": notifyNavigation (deferred) — setting navigate signal");
+        self->imageCompressor_->setNavigateSignal(mce);
+        if(self->useWebSocket_ && self->wsConnection_) {
+            self->wsConnection_->sendScrollReset();
+        }
+    });
+}
+
 void Window::handleWebSocketConnection(
     MCE,
     shared_ptr<WebSocketConnection> connection
@@ -310,6 +332,38 @@ void Window::handleWebSocketConnection(
 
     wsConnection_ = connection;
     useWebSocket_ = true;
+
+    weak_ptr<Window> weakSelf = shared_from_this();
+
+    // Route incoming client messages to this window.
+    connection->setCallbacks(
+        // resize
+        [weakSelf](int w, int h) {
+            REQUIRE_API_THREAD();
+            shared_ptr<Window> self = weakSelf.lock();
+            if(!self || self->closed_) return;
+            w = min(max(w, 1), 16384);
+            h = min(max(h, 1), 16384);
+            if(w != self->width_ || h != self->height_) {
+                self->width_ = w;
+                self->height_ = h;
+                REQUIRE(self->eventHandler_);
+                self->eventHandler_->onWindowResize(
+                    self->handle_, (size_t)w, (size_t)h
+                );
+                if(self->inFileUploadMode_) {
+                    self->notifyViewChanged();
+                }
+            }
+        },
+        // events
+        [weakSelf](uint64_t startIdx, string evtStr) {
+            REQUIRE_API_THREAD();
+            shared_ptr<Window> self = weakSelf.lock();
+            if(!self || self->closed_) return;
+            self->handleEvents_(mce, startIdx, move(evtStr));
+        }
+    );
 
     shared_ptr<Window> self = shared_from_this();
 
@@ -802,6 +856,10 @@ void Window::navigate_(MCE, int direction) {
     }
     lastNavigateOperationTime_ = steady_clock::now();
 
+    if(useWebSocket_ && wsConnection_) {
+        wsConnection_->sendScrollReset();
+    }
+
     if(!closed_) {
         REQUIRE(eventHandler_);
         eventHandler_->onWindowNavigate(handle_, direction);
@@ -1044,6 +1102,10 @@ void Window::handleNextPageRequest_(MCE, shared_ptr<HTTPRequest> request) {
 
 void Window::handleGotoURIRequest_(MCE, shared_ptr<HTTPRequest> request, string uri) {
     updateInactivityTimeout_();
+
+    if(useWebSocket_ && wsConnection_) {
+        wsConnection_->sendScrollReset();
+    }
 
     if(!closed_) {
         REQUIRE(eventHandler_);

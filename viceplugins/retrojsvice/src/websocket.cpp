@@ -1,5 +1,6 @@
 #include "websocket.hpp"
 
+#include "common.hpp"
 #include "task_queue.hpp"
 
 #include <Poco/Net/WebSocket.h>
@@ -70,16 +71,15 @@ void WebSocketConnection::readLoop_() {
                         size_t evtValEnd = msg.find('"', evtValStart);
                         string evtStr = msg.substr(evtValStart, evtValEnd - evtValStart);
 
-                        auto self = shared_from_this();
-                        postTask([self, idxStr{move(idxStr)}, evtStr{move(evtStr)}]() {
-                            // Will be handled by Window via WebSocketHandler
-                            // For now we forward through the event handler
-                            // The WindowManager routes this to the correct Window
-                            if(self->closed_) return;
-                            // This task runs on the API thread; the Window will
-                            // be notified through onWebSocketMessage callback
-                            // (set up in window.cpp)
-                        });
+                        optional<uint64_t> startIdx = parseString<uint64_t>(idxStr);
+                        if(startIdx) {
+                            auto self = shared_from_this();
+                            postTask([self, idx{*startIdx}, evtStr{move(evtStr)}]() mutable {
+                                REQUIRE_API_THREAD();
+                                if(self->closed_ || !self->eventsCallback_) return;
+                                self->eventsCallback_(idx, move(evtStr));
+                            });
+                        }
                     }
                 } else if(msg.find("\"type\":\"resize\"") != string::npos) {
                     size_t wPos = msg.find("\"width\":");
@@ -95,11 +95,16 @@ void WebSocketConnection::readLoop_() {
                         if(hValEnd == string::npos) hValEnd = msg.find('}', hValStart);
                         string hStr = msg.substr(hValStart, hValEnd - hValStart);
 
-                        auto self = shared_from_this();
-                        postTask([self, wStr{move(wStr)}, hStr{move(hStr)}]() {
-                            if(self->closed_) return;
-                            // Resize will be handled through callback
-                        });
+                        optional<int> w = parseString<int>(wStr);
+                        optional<int> h = parseString<int>(hStr);
+                        if(w && h) {
+                            auto self = shared_from_this();
+                            postTask([self, width{*w}, height{*h}]() {
+                                REQUIRE_API_THREAD();
+                                if(self->closed_ || !self->resizeCallback_) return;
+                                self->resizeCallback_(width, height);
+                            });
+                        }
                     }
                 }
             }
@@ -118,6 +123,14 @@ void WebSocketConnection::readLoop_() {
 
     // Mark closed
     closed_ = true;
+}
+
+void WebSocketConnection::setCallbacks(
+    function<void(int, int)> resizeCb,
+    function<void(uint64_t, string)> eventsCb
+) {
+    resizeCallback_ = move(resizeCb);
+    eventsCallback_ = move(eventsCb);
 }
 
 void WebSocketConnection::sendImage(
@@ -163,6 +176,21 @@ void WebSocketConnection::sendIframeNotification() {
     } catch(const Poco::Exception& e) {
         WARNING_LOG("WebSocket sendIframeNotification failed for window ",
                     windowHandle_, ": ", e.displayText());
+        closed_ = true;
+    }
+}
+
+void WebSocketConnection::sendScrollReset() {
+    if(closed_) return;
+
+    lock_guard<mutex> lock(sendMutex_);
+    try {
+        string msg = "{\"type\":\"scroll_reset\"}";
+        ws_.sendFrame(msg.data(), (int)msg.size(),
+                      Poco::Net::WebSocket::FRAME_TEXT);
+    } catch(const Poco::Exception& e) {
+        WARNING_LOG("WebSocket sendScrollReset failed for window ", windowHandle_,
+                    ": ", e.displayText());
         closed_ = true;
     }
 }

@@ -88,6 +88,7 @@ public:
     shared_ptr<Window> createPopup(uint64_t popupHandle);
 
     void notifyViewChanged();
+    void notifyNavigation(MCE);
 
     void setCursor(int cursorSignal);
 

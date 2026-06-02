@@ -53,6 +53,7 @@ struct VicePlugin::APIFuncs {
     FOREACH_VICE_API_FUNC_ITEM(PluginNavigationControlSupportQuery_query) \
     FOREACH_VICE_API_FUNC_ITEM(WindowTitle_enable) \
     FOREACH_VICE_API_FUNC_ITEM(WindowTitle_notifyWindowTitleChanged) \
+    FOREACH_VICE_API_FUNC_ITEM(Navigation_notifyWindowNavigation) \
     FOREACH_VICE_API_FUNC_ITEM(ZoomInput_enable)
 
 #define FOREACH_VICE_API_FUNC_ITEM(name) \
@@ -281,6 +282,9 @@ shared_ptr<VicePlugin> VicePlugin::load(string filename) {
     if(apiFuncs->isExtensionSupported(APIVersion, "WindowTitle")) {
         LOAD_API_FUNC(WindowTitle_enable);
         LOAD_API_FUNC(WindowTitle_notifyWindowTitleChanged);
+    }
+    if(apiFuncs->isExtensionSupported(APIVersion, "Navigation")) {
+        LOAD_API_FUNC(Navigation_notifyWindowNavigation);
     }
     if(apiFuncs->isExtensionSupported(APIVersion, "ZoomInput")) {
         LOAD_API_FUNC(ZoomInput_enable);
@@ -903,6 +907,15 @@ void ViceContext::notifyWindowTitleChanged(uint64_t window) {
     if(plugin_->apiFuncs_->WindowTitle_enable != nullptr) {
         REQUIRE(plugin_->apiFuncs_->WindowTitle_notifyWindowTitleChanged != nullptr);
         plugin_->apiFuncs_->WindowTitle_notifyWindowTitleChanged(ctx_, window);
+    }
+}
+
+void ViceContext::notifyWindowNavigation(uint64_t window) {
+    RUNNING_CONTEXT_FUNC_CHECKS();
+    REQUIRE(openWindows_.count(window));
+
+    if(plugin_->apiFuncs_->Navigation_notifyWindowNavigation != nullptr) {
+        plugin_->apiFuncs_->Navigation_notifyWindowNavigation(ctx_, window);
     }
 }
 

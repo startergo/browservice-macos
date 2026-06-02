@@ -56,6 +56,7 @@ public:
     );
     void closeWindow(uint64_t window);
     void notifyWindowViewChanged(uint64_t window);
+    void notifyWindowNavigation(uint64_t window);
 
     void setWindowCursor(uint64_t window, VicePluginAPI_MouseCursor cursor);
 
