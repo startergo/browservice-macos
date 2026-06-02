@@ -74,6 +74,14 @@ void Window::close() {
 
     closed_ = true;
 
+    // Close WebSocket connection to send graceful close frame and stop
+    // the background Poco read loop
+    if(wsConnection_) {
+        wsConnection_->close();
+        wsConnection_.reset();
+    }
+    useWebSocket_ = false;
+
     // stopFetching will make sure that imageCompressor_->flush will not call
     // event handlers
     imageCompressor_->stopFetching();
