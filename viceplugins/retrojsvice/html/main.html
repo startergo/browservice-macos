@@ -5,6 +5,8 @@
 <style>
 body {
     overflow: hidden;
+    margin: 0;
+    padding: 0;
 }
 img {
     position: absolute;
@@ -34,6 +36,55 @@ input {
 .textCursor {
     cursor: text;
 }
+#scrollbar {
+    position: absolute;
+    right: 0;
+    top: 0;
+    width: 18px;
+    height: 100%;
+    z-index: 10;
+    background: #e0e0e0;
+    border-left: 1px solid #999;
+}
+#scrollTrack {
+    position: absolute;
+    right: 3px;
+    top: 20px;
+    width: 12px;
+    bottom: 20px;
+    background: #ccc;
+    border: 1px solid #999;
+    cursor: pointer;
+}
+#scrollThumb {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 30px;
+    background: #aaa;
+    border: 1px solid #777;
+    cursor: pointer;
+}
+#scrollUp, #scrollDown {
+    position: absolute;
+    right: 0;
+    width: 18px;
+    height: 20px;
+    z-index: 11;
+    background: #d0d0d0;
+    border: 1px solid #999;
+    text-align: center;
+    font-size: 10px;
+    line-height: 20px;
+    font-family: sans-serif;
+    cursor: pointer;
+    cursor: hand;
+    color: #333;
+    user-select: none;
+}
+#scrollUp { top: 0; }
+#scrollDown { bottom: 0; }
 </style>
 <script type="text/javascript">
 
@@ -56,7 +107,8 @@ function detectBrowserQuirks() {
     if(ua.indexOf("chrome") != -1 || ua.indexOf("chromium") != -1) {
         useOnMouseWheel = true;
     }
-    if(ua.indexOf("firefox") != -1) {
+    // Detect Gecko-based browsers: Firefox, RetroZilla, Camino, SeaMonkey, etc.
+    if(ua.indexOf("firefox") != -1 || ua.indexOf("gecko") != -1) {
         useOnDOMMouseScroll = true;
     }
     if(ua.indexOf("classilla") != -1) {
@@ -491,25 +543,15 @@ function registerEventHandlers() {
         }
     }
 
-    // Attach wheel events using all available methods for maximum compatibility
-    if(useOnDOMMouseScroll) {
-        document.addEventListener(
-            "DOMMouseScroll",
-            handleWheelEvent,
-            false
-        );
-    }
-    if(useOnMouseWheel || (typeof window.onmousewheel !== "undefined")) {
-        document.onmousewheel = handleWheelEvent;
-        // Also attach to window for IE 5/6 where document doesn't capture from images
-        window.onmousewheel = handleWheelEvent;
-    }
-    // Try modern wheel event
-    if(typeof document.onwheel !== "undefined" || (!useOnDOMMouseScroll && !useOnMouseWheel)) {
-        document.onwheel = handleWheelEvent;
-    }
-    // Fallback: attach directly to img elements for browsers where document events
-    // don't bubble from images (IE 5, very old Gecko)
+    // Attach wheel events using ALL available methods for maximum compatibility.
+    // Multiple handlers are fine — handleWheelEvent is idempotent per event.
+    try { document.addEventListener("DOMMouseScroll", handleWheelEvent, false); } catch(e) {}
+    try { window.addEventListener("DOMMouseScroll", handleWheelEvent, false); } catch(e) {}
+    document.onmousewheel = handleWheelEvent;
+    window.onmousewheel = handleWheelEvent;
+    try { document.onwheel = handleWheelEvent; } catch(e) {}
+    // Direct img element attachment for browsers where document events
+    // don't bubble from images
     imgElems[0].onmousewheel = handleWheelEvent;
     imgElems[1].onmousewheel = handleWheelEvent;
 
@@ -621,6 +663,101 @@ function registerEventHandlers() {
 
         var start = new Date().getTime();
         while(new Date().getTime() - start < 50) {}
+    };
+
+    // Scroll button handlers - works on ALL browsers including IE 5 with no mouse wheel
+    var scrollRepeatTimer = null;
+    var scrollRepeatDir = 0;
+
+    function startScrollRepeat(delta) {
+        stopScrollRepeat();
+        scrollRepeatDir = delta;
+        putEvent("MWH_" + (document.body.clientWidth | 0) + "_" + ((document.body.clientHeight | 0) / 2 | 0) + "_" + delta);
+        scrollRepeatTimer = setInterval(function() {
+            putEvent("MWH_" + (document.body.clientWidth | 0) + "_" + ((document.body.clientHeight | 0) / 2 | 0) + "_" + scrollRepeatDir);
+        }, 100);
+    }
+
+    function stopScrollRepeat() {
+        if(scrollRepeatTimer) {
+            clearInterval(scrollRepeatTimer);
+            scrollRepeatTimer = null;
+        }
+    }
+
+    var scrollUpBtn = document.getElementById("scrollUp");
+    var scrollDownBtn = document.getElementById("scrollDown");
+    var scrollTrack = document.getElementById("scrollTrack");
+    var scrollThumb = document.getElementById("scrollThumb");
+
+    if(scrollUpBtn) {
+        scrollUpBtn.onmousedown = function(event) {
+            if(event) { event.cancelBubble = true; } else { window.event.cancelBubble = true; }
+            startScrollRepeat(120);
+        };
+        scrollUpBtn.onmouseup = stopScrollRepeat;
+        scrollUpBtn.onmouseout = stopScrollRepeat;
+    }
+    if(scrollDownBtn) {
+        scrollDownBtn.onmousedown = function(event) {
+            if(event) { event.cancelBubble = true; } else { window.event.cancelBubble = true; }
+            startScrollRepeat(-120);
+        };
+        scrollDownBtn.onmouseup = stopScrollRepeat;
+        scrollDownBtn.onmouseout = stopScrollRepeat;
+    }
+
+    // Click on track to jump-scroll
+    if(scrollTrack) {
+        scrollTrack.onclick = function(event) {
+            if(!event) event = window.event;
+            // Click in upper half = page up, lower half = page down
+            var trackHeight = scrollTrack.offsetHeight || 100;
+            var clickY = (event.offsetY != null) ? event.offsetY :
+                         ((event.clientY || 0) - (scrollTrack.offsetTop || 0));
+            var delta = (clickY < trackHeight / 2) ? 1200 : -1200;
+            putEvent("MWH_" + (document.body.clientWidth | 0) + "_" + ((document.body.clientHeight | 0) / 2 | 0) + "_" + delta);
+        };
+    }
+
+    // Drag scrollbar thumb to scroll
+    var thumbDragging = false;
+    var thumbStartY = 0;
+    var savedOnMouseMove = document.onmousemove;
+    var savedOnMouseUp = document.onmouseup;
+
+    if(scrollThumb) {
+        scrollThumb.onmousedown = function(event) {
+            if(!event) event = window.event;
+            thumbDragging = true;
+            thumbStartY = (event.clientY || 0);
+            if(event.preventDefault) event.preventDefault();
+            else event.returnValue = false;
+            return false;
+        };
+    }
+
+    // Wrap existing onmousemove/onmouseup to also handle thumb drag
+    document.onmousemove = function(event) {
+        if(thumbDragging) {
+            if(!event) event = window.event;
+            var dy = (event.clientY || 0) - thumbStartY;
+            if(Math.abs(dy) > 5) {
+                var delta = (dy > 0) ? -360 : 360;
+                putEvent("MWH_" + (document.body.clientWidth | 0) + "_" + ((document.body.clientHeight | 0) / 2 | 0) + "_" + delta);
+                thumbStartY = (event.clientY || 0);
+            }
+            return;
+        }
+        if(savedOnMouseMove) savedOnMouseMove(event);
+    };
+
+    document.onmouseup = function(event) {
+        if(thumbDragging) {
+            thumbDragging = false;
+            return;
+        }
+        if(savedOnMouseUp) savedOnMouseUp(event);
     };
 }
 
@@ -753,6 +890,11 @@ function handleWSControlMessage(msgStr) {
 <body>
 <img>
 <img>
+<div id="scrollbar">
+<div id="scrollUp">&#9650;</div>
+<div id="scrollTrack"><div id="scrollThumb"></div></div>
+<div id="scrollDown">&#9660;</div>
+</div>
 <form></form>
 <form></form>
 <form></form>
