@@ -4,6 +4,7 @@
 <meta http-equiv="imagetoolbar" content="no">
 <style>
 body {
+    overflow-x: hidden;
 }
 img {
     position: absolute;
@@ -513,7 +514,12 @@ function registerEventHandlers() {
         //   → document.body.clientWidth/Height (IE 4-5 quirks mode, where body IS viewport)
         var vpW, vpH;
         if(window.innerWidth) {
-            vpW = window.innerWidth | 0;
+            // Use documentElement.clientWidth for width: it excludes the
+            // vertical scrollbar, so CEF renders content clear of it.
+            // window.innerHeight is fine for height (no horizontal scrollbar).
+            vpW = (document.documentElement && document.documentElement.clientWidth)
+                    ? (document.documentElement.clientWidth | 0)
+                    : (window.innerWidth | 0);
             vpH = window.innerHeight | 0;
         } else if(document.documentElement && document.documentElement.clientWidth) {
             vpW = document.documentElement.clientWidth | 0;
@@ -750,6 +756,16 @@ window.onload = function() {
         var spacer = document.createElement("div");
         spacer.style.height = "10000px";
         document.body.appendChild(spacer);
+
+        // The vertical scrollbar is now visible.  Remeasure the usable content
+        // width — document.documentElement.clientWidth excludes the scrollbar in
+        // standards mode (all browsers that show our scrollbar support this).
+        // This stops CEF from rendering content underneath the scrollbar, which
+        // previously caused the quality buttons on the right to be covered.
+        var usableW = document.documentElement.clientWidth | 0;
+        if(usableW > 0 && usableW < lastVpWidth) {
+            lastVpWidth = usableW;
+        }
     }
 
     registerEventHandlers();
