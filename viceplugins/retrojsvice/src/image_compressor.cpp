@@ -486,8 +486,10 @@ void ImageCompressor::pump_(MCE) {
 
     // -----------------------------------------------------------------------
     // Tile-push path: compare against prevFrame_, compress only dirty tiles.
+    // Skip when an HTTP client is waiting — fall through to full-frame path
+    // so the HTTP client gets a fresh image instead of a stale one.
     // -----------------------------------------------------------------------
-    if(pushTileMode_) {
+    if(pushTileMode_ && !waitTag_) {
         auto dirty = identifyDirtyTiles_(imageData, imageWidth, imageHeight);
         size_t totalTiles =
             ((imageWidth  + TILE_W - 1) / TILE_W) *
