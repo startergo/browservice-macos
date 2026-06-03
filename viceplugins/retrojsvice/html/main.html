@@ -171,7 +171,9 @@ function setTileLayerTop(y) {
 // Auto-resets near the edges so continuous/infinite-scroll pages never stall.
 function applyMWHToScrollbar(delta) {
     if(bodyOverflowHiddenNotSupported || !imgElems[0]) return;
-    var newY = (scrollbarY - ((delta | 0) / 3)) | 0;
+    // Divisor matches the onscroll multiplier (both 1) so wheel events and
+    // scrollbar drags move the indicator by the same number of pixels.
+    var newY = (scrollbarY - (delta | 0)) | 0;
     // Near either edge: jump to midpoint so there is always room to scroll both ways
     if(newY > 9000 || newY < 1000) newY = 5000;
     newY = Math.max(0, Math.min(9800, newY));
@@ -590,7 +592,10 @@ function registerEventHandlers() {
         document.addEventListener(
             "DOMMouseScroll",
             function(event) {
-                var delta = -120 * (event.detail | 0);
+                // detail is lines-to-scroll (typically ±3 per notch in Firefox).
+                // Multiply by 40 so one notch → ±120 units (platform standard).
+                // The old factor of 120 sent ±360 — 3× too fast.
+                var delta = -(event.detail | 0) * 40;
                 putEvent("MWH_" + mouseX + "_" + mouseY + "_" + delta);
                 applyMWHToScrollbar(delta);
                 event.preventDefault();
@@ -608,9 +613,14 @@ function registerEventHandlers() {
         };
     } else {
         document.onwheel = function(event) {
-            var delta = 0;
-            if(event.deltaY > 0) delta = -120;
-            if(event.deltaY < 0) delta = 120;
+            // Use deltaY proportionally so trackpad inertia feels natural.
+            // deltaMode 0 = pixels (trackpad / high-res wheel), 1 = lines, 2 = pages.
+            var dy = event.deltaY;
+            if(event.deltaMode === 1) dy *= 40;
+            if(event.deltaMode === 2) dy *= 800;
+            var delta = -Math.round(dy);
+            if(!delta) return;
+            delta = Math.max(-1200, Math.min(1200, delta));
             putEvent("MWH_" + mouseX + "_" + mouseY + "_" + delta);
             applyMWHToScrollbar(delta);
             if(event.preventDefault) event.preventDefault();
@@ -796,8 +806,12 @@ window.onload = function() {
                     imgElems[0].style.top = scrollY + "px";
                     imgElems[1].style.top = scrollY + "px";
                 }
-                var delta = -Math.min(Math.abs(dy) * 3, 1200);
-                if(dy < 0) delta = -delta;
+                // Multiplier 1: 1 px of scrollbar drag = 1 CEF delta unit.
+                // Matches applyMWHToScrollbar's divisor of 1 so all scroll
+                // sources are proportional and symmetric.
+                // Cap raised to 2400 (only triggers for unrealistically large
+                // single drag events — normal use stays linear).
+                var delta = (dy > 0 ? -1 : 1) * Math.min(Math.abs(dy), 2400);
                 var cx = (lastVpWidth / 2) | 0;
                 var cy = (lastVpHeight / 2) | 0;
                 putEvent("MWH_" + cx + "_" + cy + "_" + delta);
