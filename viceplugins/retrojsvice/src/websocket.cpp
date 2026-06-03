@@ -213,7 +213,8 @@ void WebSocketConnection::sendTileFrame(
     const vector<ImageCompressor::TileUpdate>& tiles,
     uint64_t frameIdx,
     int cursorSignal,
-    bool iframeSignal
+    bool iframeSignal,
+    bool scrollStuck
 ) {
     if(closed_ || tiles.empty()) return;
 
@@ -224,7 +225,8 @@ void WebSocketConnection::sendTileFrame(
             string("{\"type\":\"tiles\",\"idx\":") + toString(frameIdx) +
             ",\"count\":"  + toString(tiles.size()) +
             ",\"cursor\":" + toString(cursorSignal) +
-            ",\"iframe\":"  + (iframeSignal ? "true" : "false") + "}";
+            ",\"iframe\":"  + (iframeSignal ? "true" : "false") +
+            ",\"stuck\":"   + (scrollStuck ? "true" : "false") + "}";
         ws_.sendFrame(meta.data(), (int)meta.size(),
                       Poco::Net::WebSocket::FRAME_TEXT);
 

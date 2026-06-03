@@ -102,8 +102,9 @@ var lastVpWidth = 1;
 var lastVpHeight = 1;
 
 // Scrollbar state — only used when !bodyOverflowHiddenNotSupported
-var scrollbarY = 0;           // current scrollbar position (0–9800)
+var scrollbarY = 0;           // current scrollbar position (0–~99000)
 var scrollbarProgrammatic = false;  // true while a programmatic scrollTo is in flight
+var dragSpringTimeout = null; // debounced edge-spring for scrollbar drags
 
 // Timestamp of the most recent DOMMouseScroll event.  Used by onscroll to
 // detect the Camino duplicate: native scroll fires first, then DOMMouseScroll
@@ -181,11 +182,11 @@ function applyMWHToScrollbar(delta) {
     // trackpad), so newY is computed from the correct base regardless of
     // whether a native scroll also fired for this gesture tick.
     var newY = (scrollbarY - (delta | 0)) | 0;
-    newY = Math.max(0, Math.min(19800, newY));
+    newY = Math.max(0, Math.min(99000, newY));
     // Spring to midpoint near either edge so the scrollbar never stalls on
     // long pages.  Dragging back to 0 snaps CEF to the top (see below),
     // so the spring does not prevent returning to the page top.
-    if(newY > 18000 || newY < 2000) newY = 10000;
+    if(newY > 90000 || newY < 10000) newY = 50000;
     if(newY === scrollbarY) return;
     scrollbarProgrammatic = true;
     scrollbarY = newY;
@@ -218,6 +219,25 @@ function resetScrollbar() {
         imgElems[1].style.top = "0px";
     }
     window.scrollTo(0, 0);
+}
+
+// Called when CEF signals that it hit the top or bottom edge (scroll stuck).
+// Springs the scrollbar back to the midpoint so the user can keep scrolling.
+var lastScrollStuck = false;
+function handleScrollStuck(stuck) {
+    if(bodyOverflowHiddenNotSupported || stuck === lastScrollStuck) return;
+    lastScrollStuck = stuck;
+    if(!stuck) return;
+    // CEF hit an edge — re-centre the scrollbar so the user can scroll back.
+    scrollbarProgrammatic = true;
+    scrollbarY = 50000;
+    if(wsTileMode) {
+        setTileLayerTop(50000);
+    } else {
+        imgElems[0].style.top = "50000px";
+        imgElems[1].style.top = "50000px";
+    }
+    window.scrollTo(0, 50000);
 }
 
 // Iframe loading system
@@ -368,7 +388,11 @@ function startImgLoad() {
 function updateCursor(imgElemIdx) {
     if(shutdown) return;
 
-    var cursor = imgElems[imgElemIdx].height % 3;
+    // Height encoding: % 6 = cursor(0-2) + 3 * scroll_stuck(0-1).
+    // cursor = height % 6 % 3 (same as old height % 3).
+    // scroll_stuck = height % 6 >= 3.
+    var combined = imgElems[imgElemIdx].height % 6;
+    var cursor = combined % 3;
     if(cursor == 0) {
         var newClassName = "handCursor";
     } else if(cursor == 1) {
@@ -381,6 +405,10 @@ function updateCursor(imgElemIdx) {
         imgElemClass[imgElemIdx] = newClassName;
         imgElems[imgElemIdx].className = newClassName;
     }
+
+    // Decode scroll_stuck from the height signal.
+    var stuck = combined >= 3;
+    handleScrollStuck(stuck);
 }
 
 function postImgLoadHandler(imgLoadIdx) {
@@ -526,7 +554,7 @@ function registerEventHandlers() {
     imgElems[1].onload = function() { imgLoadHandler(1); };
 
     window.onresize = function() {
-        // The spacer (10000px) exists by now, so document.body.clientHeight is
+        // The spacer (100000px) exists by now, so document.body.clientHeight is
         // unreliable — it may return the full content height instead of the viewport.
         // Priority: window.innerWidth/Height (always viewport, all modern browsers)
         //   → documentElement.clientWidth/Height (IE 6-8 standards mode)
@@ -772,7 +800,7 @@ window.onload = function() {
     imgElems[1] = document.images[1];
 
     // Measure viewport BEFORE adding spacer so clientHeight returns
-    // the actual viewport, not the content height (10000px).
+    // the actual viewport, not the content height (100000px).
     lastVpWidth = document.body.clientWidth | 0;
     lastVpHeight = document.body.clientHeight | 0;
     if(lastVpWidth == 0 || lastVpHeight == 0) {
@@ -790,7 +818,7 @@ window.onload = function() {
     // Very old browsers (bodyOverflowHiddenNotSupported) rely on mouse wheel only.
     if(!bodyOverflowHiddenNotSupported) {
         var spacer = document.createElement("div");
-        spacer.style.height = "20000px";
+        spacer.style.height = "100000px";
         document.body.appendChild(spacer);
 
         // The vertical scrollbar is now visible.  Remeasure the usable content
@@ -860,19 +888,29 @@ window.onload = function() {
                 // non-Gecko browser (Chrome, IE, etc.).
                 scrollbarY = scrollY;
                 putEvent("MWH_" + cx + "_" + cy + "_" + delta);
-                // Spring to midpoint near either edge, same as
-                // applyMWHToScrollbar, so drag-based scrolling also
-                // never stalls on long pages.
-                if(scrollY > 18000 || scrollY < 2000) {
-                    scrollbarProgrammatic = true;
-                    scrollbarY = 10000;
-                    if(wsTileMode) {
-                        setTileLayerTop(10000);
-                    } else {
-                        imgElems[0].style.top = "10000px";
-                        imgElems[1].style.top = "10000px";
-                    }
-                    window.scrollTo(0, 10000);
+                // Debounced edge-spring: schedule a spring after 200ms of
+                // inactivity.  While the user is still dragging, each
+                // onscroll resets the timer so the spring never fires mid-drag.
+                // Once the drag stops, the spring re-centres the scrollbar
+                // so it never stalls on long pages.
+                if(scrollY > 90000 || scrollY < 10000) {
+                    if(dragSpringTimeout) clearTimeout(dragSpringTimeout);
+                    dragSpringTimeout = setTimeout(function() {
+                        if(shutdown) return;
+                        dragSpringTimeout = null;
+                        scrollbarProgrammatic = true;
+                        scrollbarY = 50000;
+                        if(wsTileMode) {
+                            setTileLayerTop(50000);
+                        } else {
+                            imgElems[0].style.top = "50000px";
+                            imgElems[1].style.top = "50000px";
+                        }
+                        window.scrollTo(0, 50000);
+                    }, 200);
+                } else if(dragSpringTimeout) {
+                    clearTimeout(dragSpringTimeout);
+                    dragSpringTimeout = null;
                 }
                 if(scrollY === 0) {
                     putEvent("MWH_" + cx + "_" + cy + "_999999");
@@ -940,7 +978,7 @@ function tryWebSocket() {
                 try { msg = JSON.parse(evt.data); } catch(e) { return; }
                 if(msg.type === 'tiles') {
                     // Binary payload follows; remember metadata.
-                    pendingTiles = {count: msg.count, cursor: msg.cursor, iframe: msg.iframe};
+                    pendingTiles = {count: msg.count, cursor: msg.cursor, iframe: msg.iframe, stuck: msg.stuck};
                 } else {
                     pendingTiles = null;
                     handleWSControlMessage(evt.data);
@@ -950,7 +988,7 @@ function tryWebSocket() {
                 if(pendingTiles && pendingTiles.count > 0) {
                     var meta = pendingTiles;
                     pendingTiles = null;
-                    handleWSTiles(evt.data, meta.count, meta.cursor, meta.iframe);
+                    handleWSTiles(evt.data, meta.count, meta.cursor, meta.iframe, meta.stuck);
                 } else {
                     pendingTiles = null;
                     handleWSImage(evt.data);
@@ -1014,7 +1052,7 @@ function handleWSImage(ab) {
 }
 
 // Dirty-tile update: apply changed tiles to the tile layer.
-function handleWSTiles(ab, count, cursorSignal, iframeSignal) {
+function handleWSTiles(ab, count, cursorSignal, iframeSignal, scrollStuck) {
     // First call: create the tile layer if it doesn't exist yet.
     if(!wsTileMode) {
         wsTileMode = true;
@@ -1045,6 +1083,9 @@ function handleWSTiles(ab, count, cursorSignal, iframeSignal) {
     }
 
     if(iframeSignal) loadIframe();
+
+    // Scroll-stuck feedback: CEF hit top or bottom.
+    if(scrollStuck) handleScrollStuck(true);
 }
 
 function handleWSControlMessage(msgStr) {

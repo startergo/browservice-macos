@@ -400,7 +400,8 @@ void Window::handleWebSocketConnection(
                 self->wsImgIdx_,
                 self->imageCompressor_->cursorSignal(),
                 self->imageCompressor_->iframeSignal()
-                    != ImageCompressor::IframeSignalFalse
+                    != ImageCompressor::IframeSignalFalse,
+                self->imageCompressor_->scrollStuckSignal() != 0
             );
         }
     );
@@ -731,7 +732,10 @@ bool Window::handleTokenizedEvent_(MCE,
         int x = args[0];
         int y = args[1];
         int delta = args[2];
-        delta = max(-180, min(180, delta));
+        // No server-side clamp: the client already caps wheel deltas at
+        // ±1200 and drag deltas at ±2400.  CEF clamps at page boundaries
+        // so large deltas (including the 999999 snap-to-top) are safe.
+        imageCompressor_->notifyScrollEvent(mce);
         eventHandler_->onWindowMouseWheel(handle_, x, y, delta);
         return true;
     }

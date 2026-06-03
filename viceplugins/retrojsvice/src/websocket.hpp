@@ -49,7 +49,8 @@ public:
         const vector<ImageCompressor::TileUpdate>& tiles,
         uint64_t frameIdx,
         int cursorSignal,
-        bool iframeSignal
+        bool iframeSignal,
+        bool scrollStuck
     );
 
     // Called from API thread to push a compressed image frame.
