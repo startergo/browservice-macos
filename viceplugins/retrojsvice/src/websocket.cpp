@@ -158,6 +158,13 @@ void WebSocketConnection::readLoop_() {
         }
     }
 
+    // Send close frame to complete the WebSocket close handshake (RFC 6455 §5.5.1)
+    try {
+        ws_.shutdown();
+    } catch(const Poco::Exception&) {
+        // Already closed or connection reset — ignore
+    }
+
     // Mark closed
     closed_ = true;
 }
