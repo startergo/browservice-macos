@@ -283,6 +283,9 @@ public:
 
             // Ensure loaded page gets correct focus and mouseover status
             window_->rootWidget_->browserArea()->refreshStatusEvents();
+
+            INFO_LOG("OnLoadStart: calling onWindowNavigationStarted for window ", window_->handle_);
+            window_->eventHandler_->onWindowNavigationStarted(window_->handle_);
         }
     }
 
@@ -358,6 +361,14 @@ public:
             window_->rootWidget_->controlBar()->setAddress(url);
         }
         window_->updateSecurityStatus_();
+
+        // Signal navigation for SPA/pushState page changes (e.g. YouTube search)
+        // that don't trigger OnLoadStart.  Also fires for full-page navigations
+        // (redundant with OnLoadStart, but harmless — setNavigateSignal is idempotent).
+        if(frame->IsMain()) {
+            INFO_LOG("OnAddressChange: calling onWindowNavigationStarted for window ", window_->handle_);
+            window_->eventHandler_->onWindowNavigationStarted(window_->handle_);
+        }
     }
 
     virtual void OnTitleChange(CefRefPtr<CefBrowser> browser, const CefString& origTitle) override {

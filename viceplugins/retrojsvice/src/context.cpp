@@ -4,6 +4,7 @@
 #include "html.hpp"
 #include "secrets.hpp"
 #include "upload.hpp"
+#include "websocket.hpp"
 
 namespace retrojsvice {
 
@@ -454,6 +455,13 @@ void Context::notifyWindowViewChanged(uint64_t window) {
     windowManager_->notifyViewChanged(window);
 }
 
+void Context::notifyWindowNavigation(uint64_t window) {
+    RunningAPILock apiLock(this);
+    REQUIRE(!threadRunningPumpEvents);
+
+    windowManager_->notifyNavigation(window);
+}
+
 void Context::setWindowCursor(
     uint64_t window,
     VicePluginAPI_MouseCursor cursor
@@ -667,6 +675,31 @@ void Context::onHTTPServerRequest(shared_ptr<HTTPRequest> request) {
     } else {
         windowManager_->handleHTTPRequest(mce, request);
     }
+}
+
+void Context::onHTTPServerWebSocketConnection(
+    shared_ptr<WebSocketConnection> connection
+) {
+    REQUIRE_API_THREAD();
+    REQUIRE(state_ == Running);
+
+    // Validate HTTP Basic Auth (same check as onHTTPServerRequest)
+    if(!httpAuthCredentials_.empty()) {
+        if(!passwordsEqual(
+            connection->basicAuthCredentials(),
+            httpAuthCredentials_
+        )) {
+            connection->close();
+            return;
+        }
+    }
+
+    if(shutdownPhase_ != NoPendingShutdown) {
+        connection->close();
+        return;
+    }
+
+    windowManager_->handleWebSocketConnection(mce, connection);
 }
 
 void Context::onHTTPServerShutdownComplete() {

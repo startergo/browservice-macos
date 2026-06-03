@@ -165,6 +165,8 @@ public:
 
     void notifyWindowTitleChanged(uint64_t window);
 
+    void notifyWindowNavigation(uint64_t window);
+
     void setWindowCursor(uint64_t window, int cursor);
 
     optional<pair<vector<string>, size_t>> windowQualitySelectorQuery(

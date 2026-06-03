@@ -874,6 +874,20 @@ VICE_PLUGIN_API_FUNC_DECLSPEC void vicePluginAPI_WindowTitle_notifyWindowTitleCh
 );
 
 /***************************************************************************************************
+ *** API extension "Navigation" ***
+ ***********************************/
+
+/* Called to notify the plugin that the main frame of given window has started loading a new page.
+ * May be called for running contexts; the given window must exist. The plugin should use this to
+ * reset any scroll position tracking it maintains for the window (e.g. reset a native scrollbar
+ * back to the top so the user can scroll the new page from the beginning).
+ */
+VICE_PLUGIN_API_FUNC_DECLSPEC void vicePluginAPI_Navigation_notifyWindowNavigation(
+    VicePluginAPI_Context* ctx,
+    uint64_t window
+);
+
+/***************************************************************************************************
  *** API extension "ZoomInput" ***
  *********************************/
 

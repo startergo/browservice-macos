@@ -61,7 +61,7 @@ target_link_libraries(browservice PRIVATE libcef_dll_wrapper)
 # Link against Poco and other dependencies (assuming they are found in standard paths or HB)
 target_link_libraries(browservice PRIVATE
     PocoFoundation PocoNet PocoUtil PocoJSON
-    jpeg
+    jpeg turbojpeg
     ${PANGO_LIBRARIES} ${FREETYPE_LIBRARIES}
     intl
 )

@@ -56,6 +56,7 @@ public:
     );
     void closeWindow(uint64_t window);
     void notifyWindowViewChanged(uint64_t window);
+    void notifyWindowNavigation(uint64_t window);
 
     void setWindowCursor(uint64_t window, VicePluginAPI_MouseCursor cursor);
 
@@ -84,8 +85,11 @@ public:
     // Returns (name valSpec desc defaultValStr)-tuples
     static vector<tuple<string, string, string, string>> getOptionDocs();
 
-    // HTTPServerEventHandler - 
+    // HTTPServerEventHandler -
     virtual void onHTTPServerRequest(shared_ptr<HTTPRequest> request) override;
+    virtual void onHTTPServerWebSocketConnection(
+        shared_ptr<WebSocketConnection> connection
+    ) override;
     virtual void onHTTPServerShutdownComplete() override;
 
     // TaskQueueEventHandler - 

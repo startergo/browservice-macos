@@ -1,5 +1,5 @@
 #include "http.hpp"
-
+#include "websocket.hpp"
 #include "task_queue.hpp"
 #include "upload.hpp"
 
@@ -13,6 +13,7 @@
 #include <Poco/Net/HTTPRequestHandler.h>
 #include <Poco/Net/PartHandler.h>
 #include <Poco/Net/SocketAddress.h>
+#include <Poco/Net/WebSocket.h>
 
 namespace retrojsvice {
 
@@ -383,6 +384,61 @@ public:
         Poco::Net::HTTPServerResponse& response
     ) override {
         ActiveTaskQueueLock activeTaskQueueLock(taskQueue_);
+
+        // Check for WebSocket upgrade request
+        if(request.hasToken("Upgrade", "websocket")) {
+            string uri = request.getURI();
+
+            // Expected path: /<handle>/<csrf>/ws/
+            // Find the /ws/ suffix
+            const string wsSuffix = "/ws/";
+            if(uri.size() > wsSuffix.size() &&
+               uri.substr(uri.size() - wsSuffix.size()) == wsSuffix) {
+                string prefix = uri.substr(0, uri.size() - wsSuffix.size());
+
+                // Parse handle and csrf from prefix: /<handle>/<csrf>
+                if(!prefix.empty() && prefix[0] == '/') {
+                    prefix = prefix.substr(1);
+                }
+                size_t slashPos = prefix.find('/');
+                if(slashPos != string::npos) {
+                    string handleStr = prefix.substr(0, slashPos);
+                    string csrfStr = prefix.substr(slashPos + 1);
+
+                    optional<uint64_t> handle = parseString<uint64_t>(handleStr);
+                    if(handle) {
+                        // Create WebSocket connection and notify event handler
+                        shared_ptr<WebSocketConnection> conn =
+                            WebSocketConnection::create(
+                                request, response, *handle,
+                                move(csrfStr), taskQueue_
+                            );
+
+                        // Post task to API thread to register the connection
+                        // Note: CSRF validation happens at window level
+                        postTask(
+                            eventHandler_,
+                            &HTTPServerEventHandler::onHTTPServerWebSocketConnection,
+                            conn
+                        );
+
+                        // Block this thread on the WebSocket read loop
+                        // (keeps the Poco handler thread alive for the WS)
+                        conn->run();
+                        return;
+                    }
+                }
+            }
+
+            // WebSocket upgrade for unknown path — reject
+            response.setStatusAndReason(
+                Poco::Net::HTTPResponse::HTTPStatus::HTTP_BAD_REQUEST
+            );
+            response.send();
+            return;
+        }
+
+        // Normal HTTP request handling (existing code)
 
         unique_ptr<Poco::Net::HTMLForm> form;
         map<string, shared_ptr<FileUpload>> files;

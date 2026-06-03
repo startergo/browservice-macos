@@ -5,6 +5,7 @@
 namespace retrojsvice {
 
 class FileUpload;
+class WebSocketConnection;
 
 namespace http_ {
     class HTTPRequestHandler;
@@ -109,6 +110,9 @@ ostream& operator<<(ostream& out, SocketAddress addr);
 class HTTPServerEventHandler {
 public:
     virtual void onHTTPServerRequest(shared_ptr<HTTPRequest> request) = 0;
+    virtual void onHTTPServerWebSocketConnection(
+        shared_ptr<WebSocketConnection> connection
+    ) = 0;
     virtual void onHTTPServerShutdownComplete() = 0;
 };
 

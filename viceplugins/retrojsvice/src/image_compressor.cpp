@@ -41,7 +41,8 @@ void serveWhiteJPEGPixel(shared_ptr<HTTPRequest> request) {
     );
 }
 
-function<void(shared_ptr<HTTPRequest>)> compressPNG_(
+pair<function<void(shared_ptr<HTTPRequest>)>, shared_ptr<vector<uint8_t>>>
+compressPNG_(
     vector<uint8_t> imageData,
     size_t imageWidth,
     size_t imageHeight,
@@ -65,7 +66,14 @@ function<void(shared_ptr<HTTPRequest>)> compressPNG_(
         length += chunk.size();
     }
 
-    return [png, length](shared_ptr<HTTPRequest> request) {
+    // Flatten PNG chunks into a single contiguous buffer for push mode
+    shared_ptr<vector<uint8_t>> raw = make_shared<vector<uint8_t>>();
+    raw->reserve(length);
+    for(const vector<uint8_t>& chunk : *png) {
+        raw->insert(raw->end(), chunk.begin(), chunk.end());
+    }
+
+    auto responseFunc = [png, length](shared_ptr<HTTPRequest> request) {
         REQUIRE_API_THREAD();
 
         request->sendResponse(
@@ -79,9 +87,12 @@ function<void(shared_ptr<HTTPRequest>)> compressPNG_(
             }
         );
     };
+
+    return {move(responseFunc), move(raw)};
 }
 
-function<void(shared_ptr<HTTPRequest>)> compressJPEG_(
+pair<function<void(shared_ptr<HTTPRequest>)>, shared_ptr<vector<uint8_t>>>
+compressJPEG_(
     vector<uint8_t> imageData,
     size_t imageWidth,
     size_t imageHeight,
@@ -98,7 +109,13 @@ function<void(shared_ptr<HTTPRequest>)> compressJPEG_(
         imageWidth,
         quality
     ));
-    return [jpeg](shared_ptr<HTTPRequest> request) {
+
+    // Copy raw JPEG bytes for push mode
+    shared_ptr<vector<uint8_t>> raw = make_shared<vector<uint8_t>>(
+        jpeg->data.get(), jpeg->data.get() + jpeg->length
+    );
+
+    auto responseFunc = [jpeg](shared_ptr<HTTPRequest> request) {
         REQUIRE_API_THREAD();
 
         request->sendResponse(
@@ -110,6 +127,8 @@ function<void(shared_ptr<HTTPRequest>)> compressJPEG_(
             }
         );
     };
+
+    return {move(responseFunc), move(raw)};
 }
 
 }
@@ -129,6 +148,7 @@ ImageCompressor::ImageCompressor(CKey,
 
     iframeSignal_ = 1;
     cursorSignal_ = 1;
+    navigateSignal_ = 0;
 
     int pngThreadCount = (int)thread::hardware_concurrency();
     pngThreadCount = min(pngThreadCount, 4);
@@ -144,6 +164,12 @@ ImageCompressor::ImageCompressor(CKey,
     imageUpdated_ = false;
     compressedImageUpdated_ = false;
     compressionInProgress_ = false;
+    pushMode_ = false;
+
+    pushTileMode_ = false;
+    prevFrameW_ = 0;
+    prevFrameH_ = 0;
+    motionLevel_ = 0.0;
 }
 
 ImageCompressor::~ImageCompressor() {
@@ -241,6 +267,108 @@ void ImageCompressor::setCursorSignal(MCE, int signal) {
     }
 }
 
+void ImageCompressor::setNavigateSignal(MCE) {
+    REQUIRE_API_THREAD();
+
+    navigateSignal_ = 1;
+    updateNotify(mce);
+}
+
+void ImageCompressor::setPushTileMode(MCE,
+    function<void(const vector<TileUpdate>&)> cb
+) {
+    REQUIRE_API_THREAD();
+    pushTileMode_ = true;
+    pushTileCallback_ = move(cb);
+    pushMode_ = true;              // keeps pump_ firing after each tile frame
+    compressedImageUpdated_ = false; // don't let a stale HTTP flag block pump_
+}
+
+void ImageCompressor::resetTileState(MCE) {
+    REQUIRE_API_THREAD();
+    prevFrame_.clear();
+    prevFrameW_ = 0;
+    prevFrameH_ = 0;
+    motionLevel_ = 0.0;
+}
+
+// Compare current frame against prevFrame_ tile by tile.
+// Updates prevFrame_ to current frame and returns the list of changed tiles.
+vector<ImageCompressor::TileRegion> ImageCompressor::identifyDirtyTiles_(
+    const vector<uint8_t>& frame, size_t width, size_t height
+) {
+    vector<TileRegion> dirty;
+
+    bool fullRedraw = prevFrame_.empty()
+        || prevFrameW_ != width
+        || prevFrameH_ != height;
+
+    if(!fullRedraw) {
+        for(size_t ty = 0; ty < height; ty += TILE_H) {
+            for(size_t tx = 0; tx < width; tx += TILE_W) {
+                size_t tw = min(TILE_W, width  - tx);
+                size_t th = min(TILE_H, height - ty);
+                bool changed = false;
+                for(size_t row = 0; row < th && !changed; ++row) {
+                    size_t off = 4 * ((ty + row) * width + tx);
+                    if(memcmp(frame.data() + off, prevFrame_.data() + off, 4 * tw) != 0)
+                        changed = true;
+                }
+                if(changed)
+                    dirty.push_back({tx, ty, tw, th});
+            }
+        }
+    } else {
+        // First frame or size change — all tiles dirty.
+        for(size_t ty = 0; ty < height; ty += TILE_H)
+            for(size_t tx = 0; tx < width; tx += TILE_W)
+                dirty.push_back({tx, ty, min(TILE_W, width-tx), min(TILE_H, height-ty)});
+    }
+
+    prevFrame_  = frame;   // snapshot for next comparison
+    prevFrameW_ = width;
+    prevFrameH_ = height;
+    return dirty;
+}
+
+// Adjust the HTTP-polling wait timeout based on how much of the screen
+// changed: high motion → short timeout (new frames arrive fast);
+// static content → long timeout (avoid flooding the client with duplicates).
+void ImageCompressor::updateAdaptiveTimeout_(size_t dirtyCount, size_t totalTiles) {
+    if(totalTiles == 0) return;
+    double fraction = (double)dirtyCount / (double)totalTiles;
+    motionLevel_ = 0.75 * motionLevel_ + 0.25 * fraction;   // EMA
+    // Map [0..1] motion → [220ms..40ms] timeout (linear).
+    int ms = 40 + (int)((1.0 - motionLevel_) * 180.0);
+    sendTimeout_ = milliseconds(ms);
+}
+
+// Called on the API thread after background tile compression is done.
+void ImageCompressor::tileCompressDone_(MCE, vector<TileUpdate> tiles) {
+    REQUIRE_API_THREAD();
+    REQUIRE(compressionInProgress_);
+
+    compressionInProgress_ = false;
+
+    if(pushTileMode_ && pushTileCallback_ && !tiles.empty()) {
+        pushTileCallback_(move(tiles));
+    }
+
+    // Expedite any pending HTTP image request with whatever full-frame
+    // image is available, so HTTP clients don't hang while in tile mode.
+    flush(mce);
+
+    pump_(mce);
+}
+
+void ImageCompressor::setPushMode(MCE,
+    function<void(const vector<uint8_t>&, bool)> callback
+) {
+    REQUIRE_API_THREAD();
+    pushMode_ = true;
+    pushCallback_ = move(callback);
+}
+
 void ImageCompressor::afterConstruct_(shared_ptr<ImageCompressor> self) {
     shared_ptr<TaskQueue> taskQueue = TaskQueue::getActiveQueue();
     compressorThread_ = thread([this, taskQueue]() {
@@ -292,7 +420,17 @@ tuple<vector<uint8_t>, size_t, size_t> ImageCompressor::fetchImage_(MCE) {
             width = srcWidth;
             height = srcHeight;
 
-            while((int)(width % (size_t)IframeSignalCount) != iframeSignal_) {
+            // Encode both iframe and navigate signals in width % 4.
+            // Combined = iframeSignal + IframeSignalCount * navigateSignal (0–3).
+            // Client: iframe = combined % 2,  navigate = combined >= 2.
+            // navigateSignal_ is one-shot: cleared here after encoding.
+            int combinedWidthSignal =
+                iframeSignal_ + IframeSignalCount * navigateSignal_;
+            navigateSignal_ = 0;
+            while(
+                (int)(width % (size_t)(IframeSignalCount * NavigateSignalCount))
+                != combinedWidthSignal
+            ) {
                 ++width;
             }
             while((int)(height % (size_t)CursorSignalCount) != cursorSignal_) {
@@ -325,18 +463,18 @@ tuple<vector<uint8_t>, size_t, size_t> ImageCompressor::fetchImage_(MCE) {
 void ImageCompressor::pump_(MCE) {
     REQUIRE_API_THREAD();
 
-    if(
-        fetchingStopped_ ||
-        compressionInProgress_ ||
-        !imageUpdated_ ||
-        compressedImageUpdated_
-    ) {
+    if(fetchingStopped_ || compressionInProgress_ || !imageUpdated_) {
+        return;
+    }
+    // In HTTP-polling mode only: don't recompress while a frame is waiting
+    // to be picked up by an HTTP request.  In push/tile mode this flag stays
+    // false so we never stall.
+    if(!pushMode_ && compressedImageUpdated_) {
         return;
     }
 
     compressionInProgress_ = true;
     imageUpdated_ = false;
-
     int quality = quality_;
 
     vector<uint8_t> imageData;
@@ -345,6 +483,66 @@ void ImageCompressor::pump_(MCE) {
     tie(imageData, imageWidth, imageHeight) = fetchImage_(mce);
 
     shared_ptr<ImageCompressor> self = shared_from_this();
+
+    // -----------------------------------------------------------------------
+    // Tile-push path: compare against prevFrame_, compress only dirty tiles.
+    // Skip when an HTTP client is waiting — fall through to full-frame path
+    // so the HTTP client gets a fresh image instead of a stale one.
+    // -----------------------------------------------------------------------
+    if(pushTileMode_ && !waitTag_) {
+        auto dirty = identifyDirtyTiles_(imageData, imageWidth, imageHeight);
+        size_t totalTiles =
+            ((imageWidth  + TILE_W - 1) / TILE_W) *
+            ((imageHeight + TILE_H - 1) / TILE_H);
+        updateAdaptiveTimeout_(dirty.size(), totalTiles);
+
+        if(dirty.empty()) {
+            compressionInProgress_ = false;
+            return;   // nothing changed — skip sending, allow next OnPaint to re-trigger
+        }
+
+        function<void()> task = [
+            self,
+            quality,
+            imageData{move(imageData)},
+            imageWidth,
+            dirty{move(dirty)}
+        ]() {
+            vector<TileUpdate> updates;
+            updates.reserve(dirty.size());
+            for(const auto& r : dirty) {
+                // Extract tile into a tightly-packed BGRA buffer.
+                vector<uint8_t> tileData(4 * r.w * r.h);
+                for(size_t row = 0; row < r.h; ++row) {
+                    const uint8_t* src =
+                        imageData.data() + 4 * ((r.y + row) * imageWidth + r.x);
+                    memcpy(tileData.data() + 4 * row * r.w, src, 4 * r.w);
+                }
+                // compressJPEG_ returns (CompressedImage fn, raw-bytes ptr).
+                auto [fn, raw] = compressJPEG_(tileData, r.w, r.h, quality);
+                (void)fn;   // only the raw bytes are needed for WebSocket
+                updates.push_back({
+                    (uint16_t)r.x, (uint16_t)r.y,
+                    (uint16_t)r.w, (uint16_t)r.h,
+                    *raw
+                });
+            }
+            postTask(self, &ImageCompressor::tileCompressDone_, mce, move(updates));
+        };
+
+        {
+            lock_guard<mutex> lock(compressorMutex_);
+            REQUIRE(!compressorTaskScheduled_);
+            compressorTask_ = move(task);
+            compressorTaskScheduled_ = true;
+        }
+        compressorCv_.notify_one();
+        return;
+    }
+
+    // -----------------------------------------------------------------------
+    // Full-frame path (existing: JPEG or PNG for HTTP polling / full-frame WS)
+    // -----------------------------------------------------------------------
     shared_ptr<PNGCompressor> pngCompressor = pngCompressor_;
     function<void()> task = [
         self,
@@ -355,33 +553,57 @@ void ImageCompressor::pump_(MCE) {
         imageHeight
     ]() {
         CompressedImage compressedImage;
+        shared_ptr<vector<uint8_t>> rawData;
+        bool isJPEG;
+
         if(quality == 101) {
-            compressedImage =
-                compressPNG_(imageData, imageWidth, imageHeight, pngCompressor);
+            auto [func, raw] = compressPNG_(
+                imageData, imageWidth, imageHeight, pngCompressor
+            );
+            compressedImage = move(func);
+            rawData = move(raw);
+            isJPEG = false;
         } else {
-            compressedImage =
-                compressJPEG_(imageData, imageWidth, imageHeight, quality);
+            auto [func, raw] = compressJPEG_(
+                imageData, imageWidth, imageHeight, quality
+            );
+            compressedImage = move(func);
+            rawData = move(raw);
+            isJPEG = true;
         }
 
-        postTask(self, &ImageCompressor::compressTaskDone_, mce, compressedImage);
+        postTask(self, &ImageCompressor::compressTaskDone_,
+                 mce, compressedImage, rawData, isJPEG);
     };
 
     {
         lock_guard<mutex> lock(compressorMutex_);
         REQUIRE(!compressorTaskScheduled_);
-        compressorTask_ = task;
+        compressorTask_ = move(task);
         compressorTaskScheduled_ = true;
     }
     compressorCv_.notify_one();
 }
 
-void ImageCompressor::compressTaskDone_(MCE, CompressedImage compressedImage) {
+void ImageCompressor::compressTaskDone_(
+    MCE,
+    CompressedImage compressedImage,
+    shared_ptr<vector<uint8_t>> rawData,
+    bool isJPEG
+) {
     REQUIRE_API_THREAD();
     REQUIRE(compressionInProgress_);
 
     compressionInProgress_ = false;
     compressedImageUpdated_ = true;
     compressedImage_ = compressedImage;
+
+    if(pushMode_ && pushCallback_) {
+        compressedImageUpdated_ = false;
+        pushCallback_(*rawData, isJPEG);
+        pump_(mce);
+        return;
+    }
 
     flush(mce);
 }
