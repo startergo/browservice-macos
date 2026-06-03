@@ -768,8 +768,8 @@ window.onload = function() {
         document.body.appendChild(spacer);
 
         // The vertical scrollbar is now visible.  Remeasure the usable content
-        // width — document.documentElement.clientWidth excludes the scrollbar in
-        // standards mode (all browsers that show our scrollbar support this).
+        // width — document.documentElement.clientWidth excludes the scrollbar
+        // width in all modern browsers (any browser reaching this code path).
         // This stops CEF from rendering content underneath the scrollbar, which
         // previously caused the quality buttons on the right to be covered.
         var usableW = document.documentElement.clientWidth | 0;
