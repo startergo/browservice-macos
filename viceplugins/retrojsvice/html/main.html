@@ -105,6 +105,12 @@ var lastVpHeight = 1;
 var scrollbarY = 0;           // current scrollbar position (0–9800)
 var scrollbarProgrammatic = false;  // true while a programmatic scrollTo is in flight
 
+// Timestamp of the most recent DOMMouseScroll event.  Used by onscroll to
+// detect the Camino duplicate: native scroll fires first, then DOMMouseScroll
+// follows for the same gesture.  If onscroll sees a recent DOMMouseScroll, it
+// suppresses its own MWH (DOMMouseScroll already sent the proper one).
+var lastDOMMouseScrollTime = 0;
+
 // ── Tile-layer state (WebSocket tile-push mode) ──────────────────────────────
 // When the server sends dirty-tile frames instead of full JPEGs, we maintain a
 // grid of <img> elements (one per 128×128 tile) inside a scrolling <div>.
@@ -171,12 +177,15 @@ function setTileLayerTop(y) {
 // Auto-resets near the edges so continuous/infinite-scroll pages never stall.
 function applyMWHToScrollbar(delta) {
     if(bodyOverflowHiddenNotSupported || !imgElems[0]) return;
-    // Divisor matches the onscroll multiplier (both 1) so wheel events and
-    // scrollbar drags move the indicator by the same number of pixels.
+    // scrollbarY is the pre-native-position when onscroll deferred (Camino
+    // trackpad), so newY is computed from the correct base regardless of
+    // whether a native scroll also fired for this gesture tick.
     var newY = (scrollbarY - (delta | 0)) | 0;
-    // Near either edge: jump to midpoint so there is always room to scroll both ways
-    if(newY > 9000 || newY < 1000) newY = 5000;
-    newY = Math.max(0, Math.min(9800, newY));
+    newY = Math.max(0, Math.min(19800, newY));
+    // Spring to midpoint near either edge so the scrollbar never stalls on
+    // long pages.  Dragging back to 0 snaps CEF to the top (see below),
+    // so the spring does not prevent returning to the page top.
+    if(newY > 18000 || newY < 2000) newY = 10000;
     if(newY === scrollbarY) return;
     scrollbarProgrammatic = true;
     scrollbarY = newY;
@@ -187,6 +196,14 @@ function applyMWHToScrollbar(delta) {
         imgElems[1].style.top = newY + "px";
     }
     window.scrollTo(0, newY);
+    // Snap CEF to the page top when the thumb returns to position 0.
+    // This corrects any accumulated drift (scroll restoration, double-scroll
+    // in IE, wheel events past the spacer limit, etc.).  CEF clamps safely.
+    if(newY === 0) {
+        var snapCx = (lastVpWidth / 2) | 0;
+        var snapCy = (lastVpHeight / 2) | 0;
+        putEvent("MWH_" + snapCx + "_" + snapCy + "_999999");
+    }
 }
 
 // Reset the scrollbar to the top (called on navigation to a new page).
@@ -592,6 +609,9 @@ function registerEventHandlers() {
         document.addEventListener(
             "DOMMouseScroll",
             function(event) {
+                // Stamp this event so onscroll can recognise the Camino
+                // duplicate (native scroll + DOMMouseScroll per gesture tick).
+                lastDOMMouseScrollTime = new Date().getTime();
                 // detail is lines-to-scroll (typically ±3 per notch in Firefox).
                 // Multiply by 40 so one notch → ±120 units (platform standard).
                 // The old factor of 120 sent ±360 — 3× too fast.
@@ -673,8 +693,11 @@ function registerEventHandlers() {
             sanitizeModifiers(event, function() {
                 putEvent("KPR_" + encodeKey(key));
             });
+            preventDefault(event);
         }
-        preventDefault(event);
+        // Space (32) and control-modified letters are not forwarded to CEF
+        // here.  Let the browser handle space natively (page scroll) so the
+        // local scrollbar moves and onscroll fires.
     };
 
     document.onkeydown = function(event) {
@@ -687,7 +710,7 @@ function registerEventHandlers() {
         if(controlDown && key >= 65 && key <= 90) {
             putEvent("KPR_" + encodeKey(key + 32));
             preventDefault(event);
-        } else if(nonCharKeys[key]) {
+        } else if(nonCharKeys[key] && key !== 32) {
             if(key == 16) shiftDown = true;
             if(key == 17) controlDown = true;
             if(key == 18) altDown = true;
@@ -698,6 +721,9 @@ function registerEventHandlers() {
 
             preventDefault(event);
         }
+        // Space (32) is excluded: let the browser handle it natively so
+        // the page scrolls, the scrollbar moves, and onscroll fires to
+        // relay the scroll to CEF via MWH.
     };
 
     document.onkeyup = function(event) {
@@ -707,7 +733,7 @@ function registerEventHandlers() {
         } else {
             var key = event.which | 0;
         }
-        if(nonCharKeys[key]) {
+        if(nonCharKeys[key] && key !== 32) {
             if(key == 16) shiftDown = false;
             if(key == 17 || key == 18) {
                 controlDown = false;
@@ -764,7 +790,7 @@ window.onload = function() {
     // Very old browsers (bodyOverflowHiddenNotSupported) rely on mouse wheel only.
     if(!bodyOverflowHiddenNotSupported) {
         var spacer = document.createElement("div");
-        spacer.style.height = "10000px";
+        spacer.style.height = "20000px";
         document.body.appendChild(spacer);
 
         // The vertical scrollbar is now visible.  Remeasure the usable content
@@ -791,13 +817,12 @@ window.onload = function() {
                           ((typeof document.documentElement !== "undefined" && document.documentElement.scrollTop) ? (document.documentElement.scrollTop | 0) :
                           ((typeof document.body !== "undefined" && document.body.scrollTop) ? (document.body.scrollTop | 0) : 0));
             if(scrollbarProgrammatic) {
-                // Scroll was initiated by applyMWHToScrollbar or resetScrollbar — just sync and skip.
+                // Scroll was initiated by applyMWHToScrollbar or resetScrollbar.
                 scrollbarProgrammatic = false;
                 scrollbarY = scrollY;
                 return;
             }
             var dy = scrollY - scrollbarY;
-            scrollbarY = scrollY;
             if(dy !== 0) {
                 // Keep the active rendering layer pinned to viewport top.
                 if(wsTileMode) {
@@ -814,19 +839,43 @@ window.onload = function() {
                 var delta = (dy > 0 ? -1 : 1) * Math.min(Math.abs(dy), 2400);
                 var cx = (lastVpWidth / 2) | 0;
                 var cy = (lastVpHeight / 2) | 0;
+
+                if(useOnDOMMouseScroll && Math.abs(dy) < 50 &&
+                   (new Date().getTime() - lastDOMMouseScrollTime < 50)) {
+                    // Camino trackpad: the native scroll fires before
+                    // DOMMouseScroll for the same gesture.  Both would
+                    // generate MWH events (double scroll).  Because
+                    // DOMMouseScroll fired recently AND the native delta is
+                    // small (< 50 px — a trackpad micro-scroll, not a page
+                    // jump or drag), we suppress this duplicate.
+                    //
+                    // Do NOT update scrollbarY.  It must stay at the
+                    // scrollTo position from the previous tick's
+                    // DOMMouseScroll handler so the next onscroll can
+                    // correctly compute the delta.
+                    return;
+                }
+
+                // Genuine scrollbar drag (no recent DOMMouseScroll) or
+                // non-Gecko browser (Chrome, IE, etc.).
+                scrollbarY = scrollY;
                 putEvent("MWH_" + cx + "_" + cy + "_" + delta);
-                // Auto-spring to midpoint when near either edge, same as applyMWHToScrollbar,
-                // so the user can always keep scrolling without manually dragging back.
-                if(scrollY > 9000 || scrollY < 1000) {
+                // Spring to midpoint near either edge, same as
+                // applyMWHToScrollbar, so drag-based scrolling also
+                // never stalls on long pages.
+                if(scrollY > 18000 || scrollY < 2000) {
                     scrollbarProgrammatic = true;
-                    scrollbarY = 5000;
+                    scrollbarY = 10000;
                     if(wsTileMode) {
-                        setTileLayerTop(5000);
+                        setTileLayerTop(10000);
                     } else {
-                        imgElems[0].style.top = "5000px";
-                        imgElems[1].style.top = "5000px";
+                        imgElems[0].style.top = "10000px";
+                        imgElems[1].style.top = "10000px";
                     }
-                    window.scrollTo(0, 5000);
+                    window.scrollTo(0, 10000);
+                }
+                if(scrollY === 0) {
+                    putEvent("MWH_" + cx + "_" + cy + "_999999");
                 }
             }
         };

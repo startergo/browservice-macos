@@ -50,3 +50,5 @@ cef/
 build/
 cef/
 *.dmg
+.claude/
+.mcp.json
