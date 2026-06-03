@@ -104,6 +104,67 @@ var lastVpHeight = 1;
 var scrollbarY = 0;           // current scrollbar position (0–9800)
 var scrollbarProgrammatic = false;  // true while a programmatic scrollTo is in flight
 
+// ── Tile-layer state (WebSocket tile-push mode) ──────────────────────────────
+// When the server sends dirty-tile frames instead of full JPEGs, we maintain a
+// grid of <img> elements (one per 128×128 tile) inside a scrolling <div>.
+var tileLayer = null;    // <div> container for all tile <img> elements
+var tileImgs = {};       // map "x_y" → {elem:<img>, url:string|null}
+var wsTileMode = false;  // true once the first tiles message is received
+
+function ensureTileImg(x, y, w, h) {
+    var key = x + "_" + y;
+    if(!tileImgs[key]) {
+        var img = document.createElement("img");
+        img.style.position = "absolute";
+        img.style.left = x + "px";
+        img.style.top  = y + "px";
+        img.width  = w;
+        img.height = h;
+        tileLayer.appendChild(img);
+        tileImgs[key] = {elem: img, url: null};
+    }
+    return tileImgs[key];
+}
+
+// Parse the binary payload sent by sendTileFrame().
+// Each tile: [u16 x][u16 y][u16 w][u16 h][u32 jpeg_len][jpeg_data] (big-endian).
+function parseTileBinary(ab, count) {
+    var arr = new Uint8Array(ab);
+    var pos = 0;
+    var tiles = [];
+    for(var i = 0; i < count; i++) {
+        var x = (arr[pos]<<8)|arr[pos+1]; pos+=2;
+        var y = (arr[pos]<<8)|arr[pos+1]; pos+=2;
+        var w = (arr[pos]<<8)|arr[pos+1]; pos+=2;
+        var h = (arr[pos]<<8)|arr[pos+1]; pos+=2;
+        var len = ((arr[pos]<<24)|(arr[pos+1]<<16)|(arr[pos+2]<<8)|arr[pos+3])>>>0; pos+=4;
+        tiles.push({x:x, y:y, w:w, h:h, buf: ab.slice(pos, pos+len)});
+        pos += len;
+    }
+    return tiles;
+}
+
+// Apply a list of parsed tile updates to the tile-layer grid.
+function applyTiles(tiles) {
+    for(var i = 0; i < tiles.length; i++) {
+        var t = tiles[i];
+        var ti = ensureTileImg(t.x, t.y, t.w, t.h);
+        var newUrl = URL.createObjectURL(new Blob([t.buf], {type:"image/jpeg"}));
+        var oldUrl = ti.url;
+        ti.url = newUrl;
+        ti.elem.src = newUrl;
+        // Revoke the previous blob URL once the new tile has loaded.
+        (function(u) {
+            ti.elem.onload = function() { if(u) URL.revokeObjectURL(u); };
+        })(oldUrl);
+    }
+}
+
+// Move the tile layer to match the current scroll position.
+function setTileLayerTop(y) {
+    if(tileLayer) tileLayer.style.top = y + "px";
+}
+
 // Called after every MWH event so the scrollbar tracks all scroll sources
 // (trackpad gestures, mouse wheel, scrollbar drag already handled by onscroll).
 // Auto-resets near the edges so continuous/infinite-scroll pages never stall.
@@ -116,8 +177,12 @@ function applyMWHToScrollbar(delta) {
     if(newY === scrollbarY) return;
     scrollbarProgrammatic = true;
     scrollbarY = newY;
-    imgElems[0].style.top = newY + "px";
-    imgElems[1].style.top = newY + "px";
+    if(wsTileMode) {
+        setTileLayerTop(newY);
+    } else {
+        imgElems[0].style.top = newY + "px";
+        imgElems[1].style.top = newY + "px";
+    }
     window.scrollTo(0, newY);
 }
 
@@ -126,12 +191,13 @@ function resetScrollbar() {
     if(bodyOverflowHiddenNotSupported || !imgElems[0]) return;
     scrollbarProgrammatic = true;
     scrollbarY = 0;
-    imgElems[0].style.top = "0px";
-    imgElems[1].style.top = "0px";
+    if(wsTileMode) {
+        setTileLayerTop(0);
+    } else {
+        imgElems[0].style.top = "0px";
+        imgElems[1].style.top = "0px";
+    }
     window.scrollTo(0, 0);
-    // Briefly show in title so we can confirm this fires during testing.
-    document.title = "%-programName-%: SCROLL RESET";
-    setTimeout(function() { document.title = "%-programName-%"; }, 1500);
 }
 
 // Iframe loading system
@@ -707,9 +773,13 @@ window.onload = function() {
             var dy = scrollY - scrollbarY;
             scrollbarY = scrollY;
             if(dy !== 0) {
-                // Keep images pinned to viewport top while spacer scrolls behind.
-                imgElems[0].style.top = scrollY + "px";
-                imgElems[1].style.top = scrollY + "px";
+                // Keep the active rendering layer pinned to viewport top.
+                if(wsTileMode) {
+                    setTileLayerTop(scrollY);
+                } else {
+                    imgElems[0].style.top = scrollY + "px";
+                    imgElems[1].style.top = scrollY + "px";
+                }
                 var delta = -Math.min(Math.abs(dy) * 3, 1200);
                 if(dy < 0) delta = -delta;
                 var cx = (lastVpWidth / 2) | 0;
@@ -770,19 +840,38 @@ function tryWebSocket() {
     var wsUrl = proto + '//' + window.location.host + '%-pathPrefix-%/ws/';
     try {
         ws = new WebSocket(wsUrl);
-        ws.binaryType = 'blob';
+        // arraybuffer lets us parse tile binary payloads directly via Uint8Array
+        // without an async FileReader.  Full-frame blobs are wrapped on the fly.
+        ws.binaryType = 'arraybuffer';
 
         ws.onopen = function() {
             wsMode = true;
-            // Send initial resize
             ws.send('{"type":"resize","width":' + lastVpWidth + ',"height":' + lastVpHeight + '}');
         };
 
+        var pendingTiles = null;   // {count, cursor, iframe} from the text frame
+
         ws.onmessage = function(evt) {
             if(typeof evt.data === 'string') {
-                handleWSControlMessage(evt.data);
+                var msg;
+                try { msg = JSON.parse(evt.data); } catch(e) { return; }
+                if(msg.type === 'tiles') {
+                    // Binary payload follows; remember metadata.
+                    pendingTiles = {count: msg.count, cursor: msg.cursor, iframe: msg.iframe};
+                } else {
+                    pendingTiles = null;
+                    handleWSControlMessage(evt.data);
+                }
             } else {
-                handleWSImage(evt.data);
+                // ArrayBuffer — either dirty-tile payload or full-frame JPEG
+                if(pendingTiles && pendingTiles.count > 0) {
+                    var meta = pendingTiles;
+                    pendingTiles = null;
+                    handleWSTiles(evt.data, meta.count, meta.cursor, meta.iframe);
+                } else {
+                    pendingTiles = null;
+                    handleWSImage(evt.data);
+                }
             }
         };
 
@@ -805,19 +894,24 @@ function tryWebSocket() {
     }
 }
 
-function handleWSImage(blob) {
+// Full-frame fallback (ArrayBuffer → Blob → img src).
+// Used when the server sends a non-tile frame (e.g. initial frame after resize).
+function handleWSImage(ab) {
+    var blob = new Blob([ab], {type: 'image/jpeg'});
     var url = URL.createObjectURL(blob);
 
-    // Revoke previous blob to prevent memory leak
-    if(lastBlobUrl) {
-        URL.revokeObjectURL(lastBlobUrl);
-    }
+    if(lastBlobUrl) URL.revokeObjectURL(lastBlobUrl);
     lastBlobUrl = url;
+
+    // Switch back to full-frame mode if we were in tile mode.
+    if(wsTileMode && tileLayer) tileLayer.style.display = 'none';
+    wsTileMode = false;
 
     // Double-buffering
     wsImgLoadIdx++;
     var idx = wsImgLoadIdx & 1;
     imgElems[idx].src = url;
+    imgElems[idx].style.top = scrollbarY + "px";
     imgElems[idx].style.zIndex = 3;
     imgElems[(idx) ^ 1].style.zIndex = 2;
 
@@ -825,6 +919,40 @@ function handleWSImage(blob) {
     if(ws && ws.readyState === 1) {
         ws.send('{"type":"resize","width":' + lastVpWidth + ',"height":' + lastVpHeight + '}');
     }
+}
+
+// Dirty-tile update: apply changed tiles to the tile layer.
+function handleWSTiles(ab, count, cursorSignal, iframeSignal) {
+    // First call: create the tile layer if it doesn't exist yet.
+    if(!wsTileMode) {
+        wsTileMode = true;
+        if(!tileLayer) {
+            tileLayer = document.createElement('div');
+            tileLayer.style.position = 'absolute';
+            tileLayer.style.left = '0px';
+            tileLayer.style.top  = scrollbarY + 'px';
+            tileLayer.style.zIndex = '3';
+            document.body.appendChild(tileLayer);
+        } else {
+            tileLayer.style.display = '';
+        }
+        // Push full-frame imgs behind the tile layer.
+        imgElems[0].style.zIndex = '1';
+        imgElems[1].style.zIndex = '1';
+    }
+
+    applyTiles(parseTileBinary(ab, count));
+
+    // Cursor signal (encoded on tile frames too).
+    var cursorClass =
+        cursorSignal === 0 ? 'handCursor' :
+        cursorSignal === 1 ? 'normalCursor' : 'textCursor';
+    if(cursorClass !== imgElemClass[wsImgLoadIdx & 1]) {
+        imgElemClass[wsImgLoadIdx & 1] = cursorClass;
+        tileLayer.className = cursorClass;
+    }
+
+    if(iframeSignal) loadIframe();
 }
 
 function handleWSControlMessage(msgStr) {

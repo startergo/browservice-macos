@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common.hpp"
+#include "image_compressor.hpp"
 
 #include <Poco/Net/HTTPServerRequest.h>
 #include <Poco/Net/HTTPServerResponse.h>
@@ -39,6 +40,16 @@ public:
     void setCallbacks(
         function<void(int width, int height)> resizeCb,
         function<void(uint64_t startIdx, string events)> eventsCb
+    );
+
+    // Called from API thread to push dirty-tile updates.
+    // Binary payload format per tile (big-endian):
+    //   [uint16 x][uint16 y][uint16 w][uint16 h][uint32 jpeg_len][jpeg_data]
+    void sendTileFrame(
+        const vector<ImageCompressor::TileUpdate>& tiles,
+        uint64_t frameIdx,
+        int cursorSignal,
+        bool iframeSignal
     );
 
     // Called from API thread to push a compressed image frame.

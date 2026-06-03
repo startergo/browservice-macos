@@ -361,6 +361,8 @@ void Window::handleWebSocketConnection(
             if(w != self->width_ || h != self->height_) {
                 self->width_ = w;
                 self->height_ = h;
+                // Viewport size changed: force a full tile redraw next frame.
+                self->imageCompressor_->resetTileState(mce);
                 REQUIRE(self->eventHandler_);
                 self->eventHandler_->onWindowResize(
                     self->handle_, (size_t)w, (size_t)h
@@ -379,9 +381,12 @@ void Window::handleWebSocketConnection(
         }
     );
 
-    // Enable push mode on the image compressor to stream frames over WebSocket
-    imageCompressor_->setPushMode(mce,
-        [weakSelf](const vector<uint8_t>& imageData, bool isJPEG) {
+    // Dirty-tile push mode: the compressor compares each frame against the
+    // previous one and only compresses+sends the changed 128×128 tiles.
+    // For a mostly-static viewport (text, toolbar) this can cut bandwidth
+    // by 5–10× vs full-frame JPEG.
+    imageCompressor_->setPushTileMode(mce,
+        [weakSelf](const vector<ImageCompressor::TileUpdate>& tiles) {
             REQUIRE_API_THREAD();
             shared_ptr<Window> self = weakSelf.lock();
             if(!self || self->closed_ || !self->useWebSocket_
@@ -390,12 +395,9 @@ void Window::handleWebSocketConnection(
             }
 
             ++self->wsImgIdx_;
-            self->wsConnection_->sendImage(
-                imageData,
-                isJPEG,
+            self->wsConnection_->sendTileFrame(
+                tiles,
                 self->wsImgIdx_,
-                self->width_,
-                self->height_,
                 self->imageCompressor_->cursorSignal(),
                 self->imageCompressor_->iframeSignal()
                     != ImageCompressor::IframeSignalFalse

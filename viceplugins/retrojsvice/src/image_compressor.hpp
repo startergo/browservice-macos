@@ -76,6 +76,30 @@ public:
         function<void(const vector<uint8_t>& imageData, bool isJPEG)> callback
     );
 
+    // -----------------------------------------------------------------------
+    // Dirty-tile push mode (WebSocket optimised path)
+    // -----------------------------------------------------------------------
+    // Tile size used for dirty detection and per-tile JPEG compression.
+    static constexpr size_t TILE_W = 128;
+    static constexpr size_t TILE_H = 128;
+
+    // A single dirty tile: pixel coords + compressed JPEG bytes.
+    struct TileUpdate {
+        uint16_t x, y, w, h;
+        vector<uint8_t> jpeg;
+    };
+
+    // Switch to tile-push mode.  On each new frame the compressor identifies
+    // changed 128×128 tiles (by comparing against the previously sent frame),
+    // compresses only those tiles, and invokes cb with the list.
+    // An empty list means nothing changed; cb is NOT called in that case.
+    void setPushTileMode(MCE,
+        function<void(const vector<TileUpdate>&)> cb
+    );
+
+    // Force a full-redraw on the next frame (call after viewport resize).
+    void resetTileState(MCE);
+
     // Functions for changing signal propagated in size of the
     // compressed image By default both are 1
     static constexpr int IframeSignalTrue = 0;
@@ -116,6 +140,14 @@ private:
         shared_ptr<vector<uint8_t>> rawData,
         bool isJPEG
     );
+    void tileCompressDone_(MCE, vector<TileUpdate> tiles);
+
+    // Dirty-tile helpers (all called on API thread or background thread).
+    struct TileRegion { size_t x, y, w, h; };
+    vector<TileRegion> identifyDirtyTiles_(
+        const vector<uint8_t>& frame, size_t width, size_t height
+    );
+    void updateAdaptiveTimeout_(size_t dirtyCount, size_t totalTiles);
 
     weak_ptr<ImageCompressorEventHandler> eventHandler_;
     steady_clock::duration sendTimeout_;
@@ -142,9 +174,17 @@ private:
     bool compressedImageUpdated_;
     bool compressionInProgress_;
 
-    // Push mode (WebSocket streaming)
+    // Push mode (WebSocket streaming — full frames)
     bool pushMode_;
     function<void(const vector<uint8_t>&, bool)> pushCallback_;
+
+    // Tile-push mode (WebSocket dirty-tile path)
+    bool pushTileMode_;
+    function<void(const vector<TileUpdate>&)> pushTileCallback_;
+    vector<uint8_t> prevFrame_;   // last frame snapshot for dirty comparison
+    size_t prevFrameW_;
+    size_t prevFrameH_;
+    double motionLevel_;          // EMA of dirty-tile fraction (0=static, 1=full motion)
 };
 
 }

@@ -209,6 +209,61 @@ void WebSocketConnection::sendImage(
     }
 }
 
+void WebSocketConnection::sendTileFrame(
+    const vector<ImageCompressor::TileUpdate>& tiles,
+    uint64_t frameIdx,
+    int cursorSignal,
+    bool iframeSignal
+) {
+    if(closed_ || tiles.empty()) return;
+
+    lock_guard<mutex> lock(sendMutex_);
+    try {
+        // ---- text metadata frame ----------------------------------------
+        string meta =
+            string("{\"type\":\"tiles\",\"idx\":") + toString(frameIdx) +
+            ",\"count\":"  + toString(tiles.size()) +
+            ",\"cursor\":" + toString(cursorSignal) +
+            ",\"iframe\":"  + (iframeSignal ? "true" : "false") + "}";
+        ws_.sendFrame(meta.data(), (int)meta.size(),
+                      Poco::Net::WebSocket::FRAME_TEXT);
+
+        // ---- binary payload: tightly-packed tile headers + JPEG data -----
+        // Per tile (big-endian):
+        //   uint16 x, uint16 y, uint16 w, uint16 h, uint32 jpeg_len, jpeg_data…
+        size_t totalBytes = 0;
+        for(const auto& t : tiles)
+            totalBytes += 12 + t.jpeg.size();   // 4×uint16 + uint32 + data
+
+        vector<uint8_t> payload;
+        payload.reserve(totalBytes);
+
+        auto pushU16 = [&](uint16_t v) {
+            payload.push_back((v >> 8) & 0xFF);
+            payload.push_back(v & 0xFF);
+        };
+        auto pushU32 = [&](uint32_t v) {
+            payload.push_back((v >> 24) & 0xFF);
+            payload.push_back((v >> 16) & 0xFF);
+            payload.push_back((v >>  8) & 0xFF);
+            payload.push_back(v & 0xFF);
+        };
+
+        for(const auto& t : tiles) {
+            pushU16(t.x); pushU16(t.y); pushU16(t.w); pushU16(t.h);
+            pushU32((uint32_t)t.jpeg.size());
+            payload.insert(payload.end(), t.jpeg.begin(), t.jpeg.end());
+        }
+
+        ws_.sendFrame(payload.data(), (int)payload.size(),
+                      Poco::Net::WebSocket::FRAME_BINARY);
+    } catch(const Poco::Exception& e) {
+        WARNING_LOG("WebSocket sendTileFrame failed for window ", windowHandle_,
+                    ": ", e.displayText());
+        closed_ = true;
+    }
+}
+
 void WebSocketConnection::sendIframeNotification() {
     if(closed_) return;
 
