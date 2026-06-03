@@ -790,8 +790,12 @@ window.onload = function() {
                 if(scrollY > 9000 || scrollY < 1000) {
                     scrollbarProgrammatic = true;
                     scrollbarY = 5000;
-                    imgElems[0].style.top = "5000px";
-                    imgElems[1].style.top = "5000px";
+                    if(wsTileMode) {
+                        setTileLayerTop(5000);
+                    } else {
+                        imgElems[0].style.top = "5000px";
+                        imgElems[1].style.top = "5000px";
+                    }
                     window.scrollTo(0, 5000);
                 }
             }
@@ -904,7 +908,16 @@ function handleWSImage(ab) {
     lastBlobUrl = url;
 
     // Switch back to full-frame mode if we were in tile mode.
-    if(wsTileMode && tileLayer) tileLayer.style.display = 'none';
+    if(wsTileMode) {
+        if(tileLayer) tileLayer.style.display = 'none';
+        // Revoke all tile blob URLs to free memory
+        for(var key in tileImgs) {
+            if(tileImgs[key].url) {
+                URL.revokeObjectURL(tileImgs[key].url);
+                tileImgs[key].url = null;
+            }
+        }
+    }
     wsTileMode = false;
 
     // Double-buffering

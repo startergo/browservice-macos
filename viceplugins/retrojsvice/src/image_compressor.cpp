@@ -354,6 +354,10 @@ void ImageCompressor::tileCompressDone_(MCE, vector<TileUpdate> tiles) {
         pushTileCallback_(move(tiles));
     }
 
+    // Expedite any pending HTTP image request with whatever full-frame
+    // image is available, so HTTP clients don't hang while in tile mode.
+    flush(mce);
+
     pump_(mce);
 }
 
