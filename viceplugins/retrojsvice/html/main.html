@@ -80,8 +80,6 @@ function detectBrowserQuirks() {
         }
     }
 }
-
-// State variables
 var shutdown = false;
 
 var eventQueue = new Array();
@@ -102,6 +100,8 @@ var lastVpWidth = 1;
 var lastVpHeight = 1;
 
 // Scrollbar state — only used when !bodyOverflowHiddenNotSupported
+// and !useInternalScrollbar (internal CEF/native scrollbar handles feedback).
+var useInternalScrollbar = true;
 var scrollbarY = 0;           // current scrollbar position (0–~99000)
 var scrollbarProgrammatic = false;  // true while a programmatic scrollTo is in flight
 var dragSpringTimeout = null; // debounced edge-spring for scrollbar drags
@@ -177,7 +177,7 @@ function setTileLayerTop(y) {
 // (trackpad gestures, mouse wheel, scrollbar drag already handled by onscroll).
 // Auto-resets near the edges so continuous/infinite-scroll pages never stall.
 function applyMWHToScrollbar(delta) {
-    if(bodyOverflowHiddenNotSupported || !imgElems[0]) return;
+    if(bodyOverflowHiddenNotSupported || useInternalScrollbar || !imgElems[0]) return;
     // scrollbarY is the pre-native-position when onscroll deferred (Camino
     // trackpad), so newY is computed from the correct base regardless of
     // whether a native scroll also fired for this gesture tick.
@@ -209,7 +209,7 @@ function applyMWHToScrollbar(delta) {
 
 // Reset the scrollbar to the top (called on navigation to a new page).
 function resetScrollbar() {
-    if(bodyOverflowHiddenNotSupported || !imgElems[0]) return;
+    if(bodyOverflowHiddenNotSupported || useInternalScrollbar || !imgElems[0]) return;
     scrollbarProgrammatic = true;
     scrollbarY = 0;
     if(wsTileMode) {
@@ -225,7 +225,7 @@ function resetScrollbar() {
 // Springs the scrollbar back to the midpoint so the user can keep scrolling.
 var lastScrollStuck = false;
 function handleScrollStuck(stuck) {
-    if(bodyOverflowHiddenNotSupported || stuck === lastScrollStuck) return;
+    if(bodyOverflowHiddenNotSupported || useInternalScrollbar || stuck === lastScrollStuck) return;
     lastScrollStuck = stuck;
     if(!stuck) return;
     // CEF hit an edge — re-centre the scrollbar so the user can scroll back.
@@ -739,7 +739,7 @@ function registerEventHandlers() {
         if(controlDown && key >= 65 && key <= 90) {
             putEvent("KPR_" + encodeKey(key + 32));
             preventDefault(event);
-        } else if(nonCharKeys[key] && key !== 32) {
+        } else if(nonCharKeys[key] && (key !== 32 || useInternalScrollbar)) {
             if(key == 16) shiftDown = true;
             if(key == 17) controlDown = true;
             if(key == 18) altDown = true;
@@ -750,9 +750,10 @@ function registerEventHandlers() {
 
             preventDefault(event);
         }
-        // Space (32) is excluded: let the browser handle it natively so
-        // the page scrolls, the scrollbar moves, and onscroll fires to
-        // relay the scroll to CEF via MWH.
+        // Space (32) is excluded when using the external scrollbar: let the
+        // browser handle it natively so the page scrolls, the scrollbar moves,
+        // and onscroll fires to relay the scroll to CEF via MWH.  When using
+        // the internal scrollbar, Space is forwarded to CEF directly.
     };
 
     document.onkeyup = function(event) {
@@ -762,7 +763,7 @@ function registerEventHandlers() {
         } else {
             var key = event.which | 0;
         }
-        if(nonCharKeys[key] && key !== 32) {
+        if(nonCharKeys[key] && (key !== 32 || useInternalScrollbar)) {
             if(key == 16) shiftDown = false;
             if(key == 17 || key == 18) {
                 controlDown = false;
@@ -815,9 +816,25 @@ window.onload = function() {
     lastVpWidth = Math.max(lastVpWidth, 1);
     lastVpHeight = Math.max(lastVpHeight, 1);
 
-    // Add spacer for native scrollbar only on browsers that support scroll-to.
+    // When using the internal scrollbar, CEF/Chrome/Firefox overlay
+    // scrollbars cover content on the right.  Subtract scrollbar width
+    // on non-IE browsers so quality buttons stay visible.
+    if(!bodyOverflowHiddenNotSupported && useInternalScrollbar && !fixMousePosition) {
+        var scrollMeasurer = document.createElement("div");
+        scrollMeasurer.style.cssText =
+            "width:100px;height:100px;overflow:scroll;position:absolute;top:-9999px";
+        document.body.appendChild(scrollMeasurer);
+        var scrollbarWidth = scrollMeasurer.offsetWidth - scrollMeasurer.clientWidth;
+        document.body.removeChild(scrollMeasurer);
+        if(scrollbarWidth > 0) {
+            lastVpWidth -= scrollbarWidth;
+        }
+    }
+
+    // Add spacer for native scrollbar only on browsers that support scroll-to
+    // and when not using the internal CEF scrollbar for feedback.
     // Very old browsers (bodyOverflowHiddenNotSupported) rely on mouse wheel only.
-    if(!bodyOverflowHiddenNotSupported) {
+    if(!bodyOverflowHiddenNotSupported && !useInternalScrollbar) {
         var spacer = document.createElement("div");
         spacer.style.height = "100000px";
         document.body.appendChild(spacer);
@@ -839,7 +856,7 @@ window.onload = function() {
     // position:absolute images must track scrollY manually via style.top so
     // they stay pinned to the viewport on every browser (including IE 6 which
     // has no position:fixed support).
-    if(!bodyOverflowHiddenNotSupported) {
+    if(!bodyOverflowHiddenNotSupported && !useInternalScrollbar) {
         window.onscroll = function() {
             if(shutdown) return;
             var scrollY = (typeof window.pageYOffset !== "undefined") ? (window.pageYOffset | 0) :
@@ -927,7 +944,7 @@ window.onload = function() {
     if(window.history && window.history.scrollRestoration) {
         window.history.scrollRestoration = 'manual';
     }
-    if(!bodyOverflowHiddenNotSupported) {
+    if(!bodyOverflowHiddenNotSupported && !useInternalScrollbar) {
         scrollbarProgrammatic = true;
         scrollbarY = 0;
         imgElems[0].style.top = "0px";
