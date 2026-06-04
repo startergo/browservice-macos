@@ -279,6 +279,10 @@ void ImageCompressor::setNavigateSignal(MCE) {
 void ImageCompressor::notifyScrollEvent(MCE) {
     REQUIRE_API_THREAD();
     scrollEventPending_ = true;
+    // Trigger a pump so stuck-scroll detection runs even when CEF doesn't
+    // repaint (e.g. page at its scroll limit).  Without this, a static page
+    // would never detect the stuck condition.
+    updateNotify(mce);
 }
 
 void ImageCompressor::setPushTileMode(MCE,

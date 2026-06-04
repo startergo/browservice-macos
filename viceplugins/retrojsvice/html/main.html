@@ -183,10 +183,13 @@ function applyMWHToScrollbar(delta) {
     // whether a native scroll also fired for this gesture tick.
     var newY = (scrollbarY - (delta | 0)) | 0;
     newY = Math.max(0, Math.min(99000, newY));
+    // Snap CEF to the page top when the computed position reaches 0.
+    // Must be checked BEFORE the edge-spring, which would overwrite
+    // newY to 50000 and make the snap unreachable.
+    var snapToTop = (newY === 0);
     // Spring to midpoint near either edge so the scrollbar never stalls on
-    // long pages.  Dragging back to 0 snaps CEF to the top (see below),
-    // so the spring does not prevent returning to the page top.
-    if(newY > 90000 || newY < 10000) newY = 50000;
+    // long pages.  Skip the spring when snapping to the top.
+    if(!snapToTop && (newY > 90000 || newY < 10000)) newY = 50000;
     if(newY === scrollbarY) return;
     scrollbarProgrammatic = true;
     scrollbarY = newY;
@@ -197,10 +200,10 @@ function applyMWHToScrollbar(delta) {
         imgElems[1].style.top = newY + "px";
     }
     window.scrollTo(0, newY);
-    // Snap CEF to the page top when the thumb returns to position 0.
-    // This corrects any accumulated drift (scroll restoration, double-scroll
-    // in IE, wheel events past the spacer limit, etc.).  CEF clamps safely.
-    if(newY === 0) {
+    // Snap CEF to the page top when the position reaches 0.  This corrects
+    // any accumulated drift (scroll restoration, double-scroll in IE,
+    // wheel events past the spacer limit, etc.).  CEF clamps safely.
+    if(snapToTop) {
         var snapCx = (lastVpWidth / 2) | 0;
         var snapCy = (lastVpHeight / 2) | 0;
         putEvent("MWH_" + snapCx + "_" + snapCy + "_999999");
