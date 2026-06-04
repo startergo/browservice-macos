@@ -120,9 +120,21 @@ public:
 
     void setCursorSignal(MCE, int signal);
 
+    // Scroll-stuck signal: set when a scroll event produces no visual change,
+    // indicating CEF has hit the top or bottom of the page.
+    static constexpr int ScrollStuckSignalCount = 2;   // 0 = active, 1 = stuck
+    // Combined height modulus: cursor (3) × scroll_stuck (2) = 6.
+    static constexpr int HeightSignalCount =
+        CursorSignalCount * ScrollStuckSignalCount;
+
+    // Called when the client sends a mouse-wheel (MWH) event so the compressor
+    // can correlate it with the next frame comparison.
+    void notifyScrollEvent(MCE);
+
     // Accessors for current signal values (used by WebSocket push path)
     int cursorSignal() const { return cursorSignal_; }
     int iframeSignal() const { return iframeSignal_; }
+    int scrollStuckSignal() const { return scrollStuckSignal_; }
 
 private:
     void afterConstruct_(shared_ptr<ImageCompressor> self);
@@ -156,6 +168,8 @@ private:
     int iframeSignal_;
     int cursorSignal_;
     int navigateSignal_;  // one-shot, cleared by fetchImage_ after encoding
+    int scrollStuckSignal_;      // 0 = active, 1 = CEF hit edge
+    bool scrollEventPending_;    // true after MWH, cleared on next frame comparison
 
     shared_ptr<PNGCompressor> pngCompressor_;
 

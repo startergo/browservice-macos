@@ -149,6 +149,8 @@ ImageCompressor::ImageCompressor(CKey,
     iframeSignal_ = 1;
     cursorSignal_ = 1;
     navigateSignal_ = 0;
+    scrollStuckSignal_ = 0;
+    scrollEventPending_ = false;
 
     int pngThreadCount = (int)thread::hardware_concurrency();
     pngThreadCount = min(pngThreadCount, 4);
@@ -271,6 +273,15 @@ void ImageCompressor::setNavigateSignal(MCE) {
     REQUIRE_API_THREAD();
 
     navigateSignal_ = 1;
+    updateNotify(mce);
+}
+
+void ImageCompressor::notifyScrollEvent(MCE) {
+    REQUIRE_API_THREAD();
+    scrollEventPending_ = true;
+    // Trigger a pump so stuck-scroll detection runs even when CEF doesn't
+    // repaint (e.g. page at its scroll limit).  Without this, a static page
+    // would never detect the stuck condition.
     updateNotify(mce);
 }
 
@@ -433,7 +444,14 @@ tuple<vector<uint8_t>, size_t, size_t> ImageCompressor::fetchImage_(MCE) {
             ) {
                 ++width;
             }
-            while((int)(height % (size_t)CursorSignalCount) != cursorSignal_) {
+            // Encode cursor (3 states) + scroll_stuck (2 states) in height % 6.
+            // Client: cursor = height % 6 % 3,  scroll_stuck = height % 6 / 3.
+            // cursor % 3 is unchanged from the old % 3 encoding.
+            int combinedHeightSignal =
+                cursorSignal_ + CursorSignalCount * scrollStuckSignal_;
+            while(
+                (int)(height % (size_t)HeightSignalCount) != combinedHeightSignal
+            ) {
                 ++height;
             }
 
@@ -497,8 +515,22 @@ void ImageCompressor::pump_(MCE) {
         updateAdaptiveTimeout_(dirty.size(), totalTiles);
 
         if(dirty.empty()) {
-            compressionInProgress_ = false;
-            return;   // nothing changed — skip sending, allow next OnPaint to re-trigger
+            // Frame unchanged.  If a scroll event was pending, CEF hit an edge.
+            if(scrollEventPending_) {
+                scrollStuckSignal_ = 1;
+                scrollEventPending_ = false;
+                // Re-fetch the image so the height encoding picks up the
+                // scroll_stuck=1 signal, then send via the full-frame path
+                // below (tile-push with empty dirty tiles would bail out).
+                tie(imageData, imageWidth, imageHeight) = fetchImage_(mce);
+                goto fullFramePath;
+            } else {
+                compressionInProgress_ = false;
+                return;   // nothing changed, no scroll pending — skip
+            }
+        } else {
+            scrollStuckSignal_ = 0;
+            scrollEventPending_ = false;
         }
 
         function<void()> task = [
@@ -542,7 +574,25 @@ void ImageCompressor::pump_(MCE) {
 
     // -----------------------------------------------------------------------
     // Full-frame path (existing: JPEG or PNG for HTTP polling / full-frame WS)
+fullFramePath:
+    // Detect scroll stuck by comparing to the previous frame.
     // -----------------------------------------------------------------------
+    if(!pushTileMode_ && scrollEventPending_) {
+        bool unchanged =
+            !prevFrame_.empty()
+            && prevFrameW_ == imageWidth
+            && prevFrameH_ == imageHeight
+            && imageData.size() == prevFrame_.size()
+            && memcmp(imageData.data(), prevFrame_.data(), imageData.size()) == 0;
+        scrollStuckSignal_ = unchanged ? 1 : 0;
+        scrollEventPending_ = false;
+    }
+    if(!pushTileMode_) {
+        prevFrame_ = imageData;
+        prevFrameW_ = imageWidth;
+        prevFrameH_ = imageHeight;
+    }
+
     shared_ptr<PNGCompressor> pngCompressor = pngCompressor_;
     function<void()> task = [
         self,
