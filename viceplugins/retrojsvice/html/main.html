@@ -557,8 +557,9 @@ function registerEventHandlers() {
         // The spacer (100000px) exists by now, so document.body.clientHeight is
         // unreliable — it may return the full content height instead of the viewport.
         // Priority: window.innerWidth/Height (always viewport, all modern browsers)
-        //   → documentElement.clientWidth/Height (IE 6-8 standards mode)
-        //   → document.body.clientWidth/Height (IE 4-5 quirks mode, where body IS viewport)
+        //   → documentElement.clientWidth/Height (IE 6-8; returns 0 in quirks
+        //     mode, so IE falls through to the body branch below)
+        //   → document.body.clientWidth/Height (IE 4-5 quirks, where body IS viewport)
         var vpW, vpH;
         if(window.innerWidth) {
             // Use documentElement.clientWidth for width: it excludes the
@@ -1085,7 +1086,7 @@ function handleWSTiles(ab, count, cursorSignal, iframeSignal, scrollStuck) {
     if(iframeSignal) loadIframe();
 
     // Scroll-stuck feedback: CEF hit top or bottom.
-    if(scrollStuck) handleScrollStuck(true);
+    handleScrollStuck(scrollStuck);
 }
 
 function handleWSControlMessage(msgStr) {

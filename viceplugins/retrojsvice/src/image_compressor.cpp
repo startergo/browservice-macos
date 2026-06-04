@@ -515,8 +515,11 @@ void ImageCompressor::pump_(MCE) {
             if(scrollEventPending_) {
                 scrollStuckSignal_ = 1;
                 scrollEventPending_ = false;
-                // Fall through to full-frame path so the height encoding
-                // carries scroll_stuck=1 and a frame is sent.
+                // Re-fetch the image so the height encoding picks up the
+                // scroll_stuck=1 signal, then send via the full-frame path
+                // below (tile-push with empty dirty tiles would bail out).
+                tie(imageData, imageWidth, imageHeight) = fetchImage_(mce);
+                goto fullFramePath;
             } else {
                 compressionInProgress_ = false;
                 return;   // nothing changed, no scroll pending — skip
@@ -567,6 +570,7 @@ void ImageCompressor::pump_(MCE) {
 
     // -----------------------------------------------------------------------
     // Full-frame path (existing: JPEG or PNG for HTTP polling / full-frame WS)
+fullFramePath:
     // Detect scroll stuck by comparing to the previous frame.
     // -----------------------------------------------------------------------
     if(!pushTileMode_ && scrollEventPending_) {
